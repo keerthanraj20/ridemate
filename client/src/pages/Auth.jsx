@@ -39,7 +39,7 @@ export default function Auth() {
     <div className="auth-wrap">
       <div className="card auth-card">
         <div className="auth-hero">
-          <h1>{mode === 'login' ? 'Welcome back 👋' : 'Join RideMate 🚗'}</h1>
+          <h1>{mode === 'login' ? 'Welcome back' : 'Join RideMate'} <span style={{ color: 'var(--text)' }}>{mode === 'login' ? '👋' : ''}</span></h1>
           <p>Vehicle owners &amp; walkers — travel together to the same place. No drivers. No commissions.</p>
         </div>
 

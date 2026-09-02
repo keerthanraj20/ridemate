@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Star, Save, Car, Search, Trash2 } from 'lucide-react'
 import { api } from '../api.js'
 import LocationPicker from '../components/LocationPicker.jsx'
 import { useToast } from '../Toast.jsx'
@@ -75,7 +76,7 @@ export default function SavedRoutes() {
   return (
     <div className="page fade-in">
       <div className="page-head">
-        <h2>Saved Routes <span className="grad-text">⭐</span></h2>
+        <h2>Saved Routes <span className="grad-text grad-icon"><Star size={26} /></span></h2>
         <p>Save your frequent routes for one-tap ride offering or finding.</p>
       </div>
 
@@ -94,7 +95,7 @@ export default function SavedRoutes() {
             <LocationPicker label="🔴 To" value={form.to} onChange={(v) => setForm({ ...form, to: v })} />
           </div>
           <div className="row">
-            <button className="btn primary" type="submit">💾 Save route</button>
+            <button className="btn primary" type="submit"><Save size={16} /> Save route</button>
             <button className="btn ghost" type="button" onClick={() => setAdding(false)}>Cancel</button>
           </div>
         </form>
@@ -104,7 +105,7 @@ export default function SavedRoutes() {
         <div className="card skel-card" style={{ marginTop: 12 }}><div className="skel-line w50" /><div className="skel-line w70" /><div className="skel-line w40" /></div>
       ) : routes.length === 0 ? (
         <div className="card empty" style={{ marginTop: 12 }}>
-          <div className="empty-emoji">⭐</div>
+          <div className="empty-emoji"><Star size={40} /></div>
           <p><b>No saved routes yet.</b></p>
           <p className="hint">Save the routes you travel often — like home to work — so you can offer or find a ride in one tap.</p>
         </div>
@@ -113,16 +114,16 @@ export default function SavedRoutes() {
           {routes.map((r) => (
             <div key={r.id} className="card ride-card hover-lift">
               <div className="ride-top">
-                <span className="veh">⭐</span>
+                <span className="veh"><Star size={15} /></span>
                 <div className="ride-route">
                   <strong>{r.label ? `${r.label} — ` : ''}{r.from_name} <span className="arrow">→</span> {r.to_name}</strong>
                   <span className="sub">Saved route</span>
                 </div>
               </div>
               <div className="row">
-                <button className="btn sm primary" onClick={() => offer(r)}>🚗 Offer a ride</button>
-                <button className="btn sm ghost" onClick={() => find(r)}>🔍 Find a ride</button>
-                <button className="btn sm danger" onClick={() => remove(r.id)}>Delete</button>
+                <button className="btn sm primary" onClick={() => offer(r)}><Car size={14} /> Offer a ride</button>
+                <button className="btn sm ghost" onClick={() => find(r)}><Search size={14} /> Find a ride</button>
+                <button className="btn sm danger" onClick={() => remove(r.id)}><Trash2 size={14} /> Delete</button>
               </div>
             </div>
           ))}

@@ -5,7 +5,6 @@ import App from './App.jsx'
 import { AuthProvider } from './AuthContext.jsx'
 import { ToastProvider } from './Toast.jsx'
 import { NotificationsProvider } from './NotificationsContext.jsx'
-import 'leaflet/dist/leaflet.css'
 import './styles.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { KeyRound } from 'lucide-react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { api } from '../api.js'
 
@@ -34,7 +35,7 @@ export default function ForgotPassword() {
   return (
     <div className="auth-wrap">
       <div className="card auth-card" style={{ maxWidth: 440 }}>
-        <h2>{isReset ? 'Reset Password 🔑' : 'Forgot Password? 📧'}</h2>
+        <h2 className="grad-icon-head"><KeyRound size={24} /> {isReset ? 'Reset Password' : 'Forgot Password?'}</h2>
         <p className="hint">{isReset ? 'Enter your new password below.' : "Enter your email and we'll send you a reset link."}</p>
 
         {!isReset ? (

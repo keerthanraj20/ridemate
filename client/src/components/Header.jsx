@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { Bell, Car, UserPlus, CheckCircle2, XCircle, AlertTriangle, MessageSquare, LogOut } from 'lucide-react'
 import { useAuth } from '../AuthContext.jsx'
 import { useNotifications } from '../NotificationsContext.jsx'
 import { initials, timeAgo, fmtDT } from '../utils.js'
 
-const TYPE_EMOJI = {
-  request: '🙋',
-  accept: '✅',
-  reject: '❌',
-  cancel: '⚠️',
-  message: '💬',
+const TYPE_ICON = {
+  request: <UserPlus size={16} />,
+  accept: <CheckCircle2 size={16} />,
+  reject: <XCircle size={16} />,
+  cancel: <AlertTriangle size={16} />,
+  message: <MessageSquare size={16} />,
 }
 
 export default function Header() {
@@ -40,7 +41,7 @@ export default function Header() {
   return (
     <header className="topbar">
       <NavLink to={user ? '/find' : '/auth'} className="brand">
-        <span className="brand-logo">🚗</span> RideMate
+        <span className="brand-logo"><Car size={20} /></span> RideMate
       </NavLink>
 
       {user && (
@@ -57,7 +58,7 @@ export default function Header() {
           <div className="userbox">
             <div className="notif-wrap" ref={boxRef}>
               <button className={`bell ${open ? 'active' : ''}`} onClick={openPanel} aria-label="Notifications">
-                🔔
+                <Bell size={18} />
                 {unread > 0 && <span className="bell-badge">{unread > 9 ? '9+' : unread}</span>}
               </button>
 
@@ -78,7 +79,7 @@ export default function Header() {
                           if (n.link) nav(n.link)
                         }}
                       >
-                        <span className="notif-emoji">{TYPE_EMOJI[n.type] || '🔔'}</span>
+                        <span className="notif-emoji">{TYPE_ICON[n.type] || <Bell size={16} />}</span>
                         <span className="notif-body">
                           <b>{n.title}</b>
                           {n.body && <span className="notif-msg">{n.body}</span>}
@@ -104,7 +105,7 @@ export default function Header() {
                 nav('/auth')
               }}
             >
-              Logout
+              <LogOut size={14} /> Logout
             </button>
           </div>
         </>

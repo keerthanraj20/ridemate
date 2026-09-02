@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { History, Car, CalendarDays, Ticket, Star as StarIcon } from 'lucide-react'
 import { api } from '../api.js'
 import { vehicleEmoji, vehicleLabel, fmtDT, priceLabel, initials, statusClass } from '../utils.js'
 import { useToast } from '../Toast.jsx'
@@ -135,7 +136,7 @@ function RideCard({ ride, role, onRate }) {
             <span className="hint">You rated this ride</span>
           </div>
         ) : canRate ? (
-          <button className="btn primary sm" onClick={() => onRate(ride)}>⭐ Rate this ride</button>
+          <button className="btn primary sm" onClick={() => onRate(ride)}><StarIcon size={14} /> Rate this ride</button>
         ) : null}
       </div>
     </div>
@@ -176,23 +177,23 @@ export default function RideHistory() {
   return (
     <div className="page fade-in">
       <div className="page-head">
-        <h2>Ride History <span className="grad-text">📜</span></h2>
+        <h2>Ride History <span className="grad-text grad-icon"><History size={26} /></span></h2>
         <p>Your past trips as a driver or traveler.</p>
       </div>
 
       <div className="tabs left">
         <button className={tab === 'offered' ? 'active' : ''} onClick={() => setTab('offered')}>
-          🚗 Offered ({offered.length})
+          <Car size={15} /> Offered ({offered.length})
         </button>
         <button className={tab === 'joined' ? 'active' : ''} onClick={() => setTab('joined')}>
-          🎟️ Joined ({joined.length})
+          <Ticket size={15} /> Joined ({joined.length})
         </button>
       </div>
 
       <div className="stack-lg">
         {current.length === 0 && (
           <div className="card empty">
-            <div className="empty-emoji">{tab === 'offered' ? '🛣️' : '🎟️'}</div>
+            <div className="empty-emoji">{tab === 'offered' ? <CalendarDays size={40} /> : <Ticket size={40} />}</div>
             <p><b>No {tab === 'offered' ? 'offered' : 'joined'} rides yet.</b></p>
             <Link className="btn primary" to={tab === 'offered' ? '/offer' : '/find'}>
               {tab === 'offered' ? 'Offer a ride' : 'Find a ride'}

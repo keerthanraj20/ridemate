@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Briefcase, Car, MessageSquare, Phone, CalendarDays, Ticket, Bell, CheckCircle2, XCircle } from 'lucide-react'
 import { api } from '../api.js'
 import MapView from '../components/MapView.jsx'
 import { vehicleEmoji, vehicleLabel, fmtDT, timeUntil, priceLabel, initials, statusClass } from '../utils.js'
@@ -80,18 +81,18 @@ export default function MyRides() {
     <div className="page fade-in">
       <div className="page-head">
         <h2>
-          My rides <span className="grad-text">🎒</span>
+          My rides <span className="grad-text grad-icon"><Briefcase size={26} /></span>
         </h2>
         <p>Manage trips you offer and seats you've requested.</p>
       </div>
 
       <div className="tabs left">
         <button className={tab === 'offered' ? 'active' : ''} onClick={() => setTab('offered')}>
-          🚗 Trips I offer ({offered.length})
+          <Car size={15} /> Trips I offer ({offered.length})
           {pendingCount > 0 && <span className="bubble">{pendingCount}</span>}
         </button>
         <button className={tab === 'booked' ? 'active' : ''} onClick={() => setTab('booked')}>
-          🎟️ My bookings ({booked.length})
+          <Ticket size={15} /> My bookings ({booked.length})
         </button>
       </div>
 
@@ -101,7 +102,7 @@ export default function MyRides() {
             <>
               {offered.length === 0 && (
                 <div className="card empty">
-                  <div className="empty-emoji">🛣️</div>
+                  <div className="empty-emoji"><CalendarDays size={40} /></div>
                   <p><b>You haven't offered any trips yet.</b></p>
                   <Link className="btn primary" to="/offer">Offer your first ride</Link>
                 </div>
@@ -120,7 +121,7 @@ export default function MyRides() {
                       </div>
                     </div>
 
-                    <h4>{pending.length > 0 ? `🔔 ${pending.length} request${pending.length > 1 ? 's' : ''} waiting` : 'Requests'}</h4>
+                    <h4>{pending.length > 0 ? (<><Bell size={15} /> {pending.length} request{pending.length > 1 ? 's' : ''} waiting</>) : 'Requests'}</h4>
                     {r.requests.length === 0 && <p className="hint">No requests yet — travelers heading your way will appear here.</p>}
                     <ul className="req-list">
                       {r.requests.map((q) => (
@@ -129,7 +130,7 @@ export default function MyRides() {
                           <div className="req-info">
                             <span><b>{q.rider_name}</b> · {q.seats} seat{q.seats > 1 ? 's' : ''}</span>
                             {q.message && <em className="msg">"{q.message}"</em>}
-                            {q.rider_phone && <span className="ok-text">📞 {q.rider_phone}</span>}
+                            {q.rider_phone && <span className="ok-text"><Phone size={13} /> {q.rider_phone}</span>}
                           </div>
                           <span className={`chip ${statusClass(q.status)}`}>{q.status}</span>
                           {q.status === 'pending' && (
@@ -145,15 +146,15 @@ export default function MyRides() {
                     {(r.status === 'open' || r.status === 'full') && (
                       <div className="row" style={{ marginTop: 8 }}>
                         <button className="btn sm primary" disabled={busyId === `/rides/${r.id}/complete`} onClick={() => act(`/rides/${r.id}/complete`)}>
-                          ✅ Mark as completed
+                          <CheckCircle2 size={14} /> Mark as completed
                         </button>
                         <button className="btn sm danger" disabled={busyId === `/rides/${r.id}/cancel`} onClick={() => act(`/rides/${r.id}/cancel`)}>
-                          🚫 Cancel ride
+                          <XCircle size={14} /> Cancel ride
                         </button>
                       </div>
                     )}
                     {r.requests.some((q) => q.status === 'accepted') && (
-                      <Link className="btn sm ghost" style={{ marginTop: 8 }} to={`/messages/${r.id}`}>💬 Chat with riders</Link>
+                      <Link className="btn sm ghost" style={{ marginTop: 8 }} to={`/messages/${r.id}`}><MessageSquare size={14} /> Chat with riders</Link>
                     )}
                   </div>
                 )
@@ -165,7 +166,7 @@ export default function MyRides() {
             <>
               {booked.length === 0 && (
                 <div className="card empty">
-                  <div className="empty-emoji">🎟️</div>
+                  <div className="empty-emoji"><Ticket size={40} /></div>
                   <p><b>No bookings yet.</b></p>
                   <Link className="btn primary" to="/find">Find a ride</Link>
                 </div>
@@ -186,16 +187,16 @@ export default function MyRides() {
                   <div className="ride-meta">
                     <span className="avatar sm">{initials(q.owner_name)}</span>
                     <span><b>{q.owner_name}</b></span>
-                    {q.owner_phone ? <span className="ok-text">📞 {q.owner_phone}</span> : q.status !== 'cancelled' ? <span className="hint">(contact visible once accepted)</span> : null}
+                    {q.owner_phone ? <span className="ok-text"><Phone size={13} /> {q.owner_phone}</span> : q.status !== 'cancelled' ? <span className="hint">(contact visible once accepted)</span> : null}
                   </div>
 
                   {(q.status === 'pending' || q.status === 'accepted') && (
                     <div className="row">
                       <button className="btn danger" disabled={busyId === `/requests/${q.id}/cancel`} onClick={() => act(`/requests/${q.id}/cancel`)}>
-                        Cancel booking
+                        <XCircle size={14} /> Cancel booking
                       </button>
                       {q.status === 'accepted' && (
-                        <Link className="btn ghost" to={`/messages/${q.ride_id}`}>💬 Chat</Link>
+                        <Link className="btn ghost" to={`/messages/${q.ride_id}`}><MessageSquare size={15} /> Chat</Link>
                       )}
                     </div>
                   )}

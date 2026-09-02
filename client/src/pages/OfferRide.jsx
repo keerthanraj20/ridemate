@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { Car, PartyPopper, Rocket } from 'lucide-react'
 import { api } from '../api.js'
 import LocationPicker from '../components/LocationPicker.jsx'
 import { VEHICLES } from '../utils.js'
@@ -61,7 +62,7 @@ export default function OfferRide() {
           repeat_every: form.repeat_every,
         },
       })
-      toast('Trip published! 🎉')
+      toast('Trip published!')
       setDone(data.ride)
     } catch (err) {
       toast(err.message, 'bad')
@@ -74,7 +75,7 @@ export default function OfferRide() {
     return (
       <div className="page narrow fade-in">
         <div className="card center-card success-card">
-          <div className="empty-emoji bounce">🎉</div>
+          <div className="empty-emoji bounce"><PartyPopper size={44} /></div>
           <h2>Your trip is live!</h2>
           <p>
             <strong>{done.from_name} → {done.to_name}</strong> · {done.seats_total} seat(s) offered
@@ -93,7 +94,7 @@ export default function OfferRide() {
     <div className="page fade-in">
       <div className="page-head">
         <h2>
-          Offer a ride <span className="grad-text">🚗</span>
+          Offer a ride <span className="grad-text grad-icon"><Car size={26} /></span>
         </h2>
         <p>You’re going there anyway — take someone along and share the cost. You approve who joins.</p>
       </div>
@@ -167,7 +168,7 @@ export default function OfferRide() {
         </div>
 
         <button className="btn primary lg" disabled={busy}>
-          {busy ? 'Publishing…' : '🚀 Publish my trip'}
+          {busy ? 'Publishing…' : (<><Rocket size={16} /> Publish my trip</>)}
         </button>
       </form>
     </div>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { MailCheck } from 'lucide-react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { api } from '../api.js'
 
@@ -20,7 +21,7 @@ export default function VerifyEmail() {
   return (
     <div className="auth-wrap">
       <div className="card auth-card" style={{ maxWidth: 440, textAlign: 'center' }}>
-        <h2>Email Verification 📧</h2>
+        <h2 className="grad-icon-head"><MailCheck size={24} /> Email Verification</h2>
         {busy && <p className="hint">Verifying your email…</p>}
         {msg && <p className="banner ok-text">{msg}</p>}
         {error && <p className="banner bad-text">{error}</p>}

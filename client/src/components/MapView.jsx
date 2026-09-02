@@ -1,8 +1,8 @@
 import { Suspense, lazy } from 'react'
 
-// Leaflet (~150 KB) is code-split away from the main bundle so the
-// first page paint stays fast. It loads in the background on demand.
-const LeafletMap = lazy(() => import('./LeafletMap.jsx'))
+// The self-contained custom map (SVG) is code-split so the initial
+// paint stays snappy; it loads on demand when a map is shown.
+const CustomMap = lazy(() => import('./CustomMap.jsx'))
 
 /**
  * points : [{ pos:[lat,lng], popup?, color? }] — markers + route line
@@ -11,7 +11,7 @@ const LeafletMap = lazy(() => import('./LeafletMap.jsx'))
 export default function MapView(props) {
   return (
     <Suspense fallback={<div className={`map skeleton ${props.className || ''}`} />}>
-      <LeafletMap {...props} />
+      <CustomMap {...props} />
     </Suspense>
   )
 }

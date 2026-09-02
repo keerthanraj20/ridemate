@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
+import { MessageSquare, Send } from 'lucide-react'
 import { api } from '../api.js'
 import { useAuth } from '../AuthContext.jsx'
 import { useToast } from '../Toast.jsx'
@@ -62,7 +63,7 @@ function ChatView({ rideId }) {
   if (!rideId) {
     return (
       <div className="card chat-card chat-placeholder">
-        <div className="empty-emoji">💬</div>
+        <div className="empty-emoji"><MessageSquare size={40} /></div>
         <p><b>Select a conversation</b> to start chatting with your ride partner.</p>
       </div>
     )
@@ -110,7 +111,7 @@ function ChatView({ rideId }) {
             onChange={(e) => setText(e.target.value)}
             autoFocus
           />
-          <button className="btn primary" disabled={sending || !text.trim()}>Send</button>
+          <button className="btn primary" disabled={sending || !text.trim()}><Send size={15} /> Send</button>
         </form>
       </div>
     </div>
@@ -156,7 +157,7 @@ export default function Messages() {
   return (
     <div className="page fade-in">
       <div className="page-head">
-        <h2>Messages <span className="grad-text">💬</span></h2>
+        <h2>Messages <span className="grad-text grad-icon"><MessageSquare size={26} /></span></h2>
         <p>Chat directly with your ride partners after a seat is accepted.</p>
       </div>
 
@@ -164,7 +165,7 @@ export default function Messages() {
         <div className="card chat-card"><div className="skel-line w40" /><div className="skel-line w70" /><div className="skel-line w60" /></div>
       ) : conversations.length === 0 ? (
         <div className="card empty">
-          <div className="empty-emoji">💬</div>
+          <div className="empty-emoji"><MessageSquare size={40} /></div>
           <p><b>No conversations yet.</b></p>
           <p className="hint">Once a ride owner accepts your request — or you accept a rider — you can chat here.</p>
           <div className="row center">

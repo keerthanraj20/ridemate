@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useLocation } from 'react-router-dom'
+import { Compass, List as ListIcon, Map as MapIcon, MapPin, Search, SearchX, Sliders } from 'lucide-react'
 import { api } from '../api.js'
 import MapView from '../components/MapView.jsx'
 import LocationPicker from '../components/LocationPicker.jsx'
@@ -132,7 +133,7 @@ export default function FindRide() {
     <div className="page fade-in">
       <div className="page-head">
         <h2>
-          Find a ride <span className="grad-text">🧭</span>
+          Find a ride <span className="grad-text grad-icon"><Compass size={26} /></span>
         </h2>
         <p>Pin where you are & where you want to go — we'll find people already driving that way.</p>
       </div>
@@ -165,12 +166,12 @@ export default function FindRide() {
         </div>
 
         <button className="btn primary lg" disabled={loading}>
-          {loading ? 'Searching…' : '🔍 Search trips'}
+          {loading ? 'Searching…' : (<><Search size={16} /> Search trips</>)}
         </button>
       </form>
 
       <div className="card filter-bar">
-        <span className="filter-label">⚙️ Filters</span>
+        <span className="filter-label"><Sliders size={14} /> Filters</span>
         <select className="input slim" value={fVehicle} onChange={(e) => setFVehicle(e.target.value)} title="Vehicle type">
           {FILTER_VEHICLES.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
         </select>
@@ -191,8 +192,8 @@ export default function FindRide() {
           title="Maximum price per seat"
         />
         <div className="view-toggle">
-          <button className={`btn sm ${view === 'list' ? 'primary' : 'ghost'}`} onClick={() => setView('list')}>📋 List</button>
-          <button className={`btn sm ${view === 'map' ? 'primary' : 'ghost'}`} onClick={() => setView('map')}>🗺️ Map</button>
+          <button className={`btn sm ${view === 'list' ? 'primary' : 'ghost'}`} onClick={() => setView('list')}><List size={14} /> List</button>
+          <button className={`btn sm ${view === 'map' ? 'primary' : 'ghost'}`} onClick={() => setView('map')}><MapIcon size={14} /> Map</button>
         </div>
       </div>
 
@@ -200,10 +201,10 @@ export default function FindRide() {
         <aside className="map-side">
           <div className="pick-mode-bar">
             <button type="button" className={`btn sm ${pickMode === 'from' ? 'primary' : 'ghost'}`} onClick={() => setPickMode(pickMode === 'from' ? null : 'from')}>
-              🟢 Pick start
+              <MapPin size={14} style={{ color: '#22c55e' }} /> Pick start
             </button>
             <button type="button" className={`btn sm ${pickMode === 'to' ? 'primary' : 'ghost'}`} onClick={() => setPickMode(pickMode === 'to' ? null : 'to')}>
-              🔴 Pick end
+              <MapPin size={14} style={{ color: '#ef4444' }} /> Pick end
             </button>
           </div>
           <MapView className={`tall center-map ${view === 'map' ? 'big' : ''}`} zoom={mapZoom} center={mapCenter} points={mapPoints} onPick={pickMode ? handleMapPick : undefined} />
@@ -222,7 +223,7 @@ export default function FindRide() {
 
           {results && results.length === 0 && !loading && (
             <div className="card empty">
-              <div className="empty-emoji">🕵️</div>
+              <div className="empty-emoji"><SearchX size={40} /></div>
               <p><b>No trips match right now.</b></p>
               <p className="hint">Try widening your pins, clearing the date filter, or check back soon.</p>
             </div>

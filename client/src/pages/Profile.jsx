@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { User, Mail, Phone, AlertTriangle } from 'lucide-react'
 import { api } from '../api.js'
 import { useAuth } from '../AuthContext.jsx'
 import { initials, fmtDT, trustLevel, trustBadge } from '../utils.js'
@@ -81,7 +82,7 @@ export default function Profile() {
       <div className="page fade-in">
         {loadError ? (
           <div className="card empty">
-            <div className="empty-emoji">⚠️</div>
+            <div className="empty-emoji"><AlertTriangle size={40} /></div>
             <p><b>Failed to load profile.</b></p>
             <p className="hint">Please try refreshing the page.</p>
           </div>
@@ -120,7 +121,7 @@ export default function Profile() {
   return (
     <div className="page fade-in">
       <div className="page-head">
-        <h2>My Profile <span className="grad-text">👤</span></h2>
+        <h2>My Profile <span className="grad-text grad-icon"><User size={26} /></span></h2>
       </div>
 
       <div className="split">
@@ -146,7 +147,7 @@ export default function Profile() {
                 </div>
                 {!data.user.email_verified ? (
                   <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={sendVerify}>
-                    📧 Send verification email
+                    <Mail size={14} /> Send verification email
                   </button>
                 ) : (
                   <span className="chip trust trust-ok" style={{ marginTop: 8 }}>✅ Email verified</span>
@@ -175,7 +176,7 @@ export default function Profile() {
               </form>
             ) : (
               <>
-                <p className="hint">📞 {data.user.phone}</p>
+                <p className="hint"><Phone size={13} /> {data.user.phone}</p>
                 {data.user.bio && <p className="profile-bio">{data.user.bio}</p>}
                 <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => setEditing(true)}>Edit Profile</button>
               </>
