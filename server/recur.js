@@ -10,9 +10,12 @@ import { db } from './db.js'
 
 function copyInstance(template, dateStr) {
   const depart = new Date(template.depart_at)
-  // Keep the same time-of-day as the template
+  // Keep the same time-of-day (UTC) as the template. Constructing in UTC
+  // (not local time) avoids DST shifts on the child instance.
   const [y, m, d] = dateStr.split('-').map(Number)
-  const next = new Date(y, m - 1, d, depart.getHours(), depart.getMinutes(), depart.getSeconds())
+  const next = new Date(
+    Date.UTC(y, m - 1, d, depart.getUTCHours(), depart.getUTCMinutes(), depart.getUTCSeconds())
+  )
 
   const insert = db.prepare(
     `INSERT INTO rides
@@ -44,28 +47,29 @@ function copyInstance(template, dateStr) {
 // Which dates must a template have an instance for?
 // We only look at the NEXT calendar day to avoid back-filling the past.
 function shouldHaveInstanceOn(template, dateObj) {
-  const dow = dateObj.getDay() // 0=Sun ... 6=Sat
+  const dow = dateObj.getUTCDay() // 0=Sun ... 6=Sat (dateObj is UTC midnight)
   switch (template.repeat_every) {
     case 'daily':
       return true
     case 'weekdays':
       return dow >= 1 && dow <= 5
     case 'weekly':
-      // record which weekday the template was created on
-      const templ = new Date(template.created_at)
-      return dow === templ.getDay()
+      // repeat on the same weekday as the template's ORIGINAL departure,
+      // not the day the ride row happened to be created.
+      return dow === new Date(template.depart_at).getUTCDay()
     default:
       return false
   }
 }
 
 export function generateRecurringRides() {
-  const today = new Date()
-  const tomorrow = new Date(today)
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  const y = tomorrow.getFullYear()
-  const m = String(tomorrow.getMonth() + 1).padStart(2, '0')
-  const d = String(tomorrow.getDate()).padStart(2, '0')
+  // Work in UTC so the "tomorrow" boundary and every generated instance are
+  // unambiguous and consistent regardless of the server's local timezone.
+  const now = new Date()
+  const tomorrowUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+  const y = tomorrowUtc.getUTCFullYear()
+  const m = String(tomorrowUtc.getUTCMonth() + 1).padStart(2, '0')
+  const d = String(tomorrowUtc.getUTCDate()).padStart(2, '0')
   const dateStr = `${y}-${m}-${d}`
 
   // All active templates (the originally-offered recurring rides)
@@ -79,7 +83,7 @@ export function generateRecurringRides() {
     .all()
 
   for (const t of templates) {
-    if (!shouldHaveInstanceOn(t, tomorrow)) continue
+    if (!shouldHaveInstanceOn(t, tomorrowUtc)) continue
 
     const exists = db
       .prepare(

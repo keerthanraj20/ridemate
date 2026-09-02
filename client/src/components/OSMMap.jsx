@@ -20,6 +20,15 @@ function dotIcon(color, size = 16) {
   })
 }
 
+// Leaflet popups are inserted as raw HTML, but the strings rendered in them
+// (place names, owner names) are user-controlled. Always escape to avoid a
+// stored-DOM-XSS vector from a crafted ride or user name.
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ))
+}
+
 /**
  * Reusable OpenStreetMap map that always shows the whole of India.
  *
@@ -85,7 +94,7 @@ export default function OSMMap({ className = '', points = [], onPick, interactiv
     for (const p of points) {
       if (!Array.isArray(p.pos) || p.pos.length < 2) continue
       const m = L.marker([p.pos[0], p.pos[1]], { icon: dotIcon(p.color || '#6366f1') })
-      if (p.popup) m.bindPopup(`<div class="map-popup">${p.popup}</div>`)
+      if (p.popup) m.bindPopup(`<div class="map-popup">${esc(p.popup)}</div>`)
       layer.addLayer(m)
     }
     layer.addTo(map)

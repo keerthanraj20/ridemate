@@ -25,7 +25,7 @@ export default function SavedRoutes() {
 
   async function save(e) {
     e.preventDefault()
-    if (!form.from.lat || !form.to.lat) return toast('Drop both pins or type places to save', 'bad')
+    if (!Number.isFinite(form.from.lat) || !Number.isFinite(form.to.lat)) return toast('Drop both pins or type places to save', 'bad')
     try {
       const data = await api('/saved-routes', {
         method: 'POST',

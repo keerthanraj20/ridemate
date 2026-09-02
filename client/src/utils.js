@@ -66,6 +66,3 @@ export const trustBadge = (level) =>
   : level >= 1 ? { label: 'Getting started', cls: 'blue' }
   : { label: 'New', cls: 'gray' }
 
-export const EMAIL_REGEX = /^\S+@\S+\.\S+$/
-export const PHONE_REGEX = /^[6-9]\d{9}$/
-

@@ -105,6 +105,57 @@ describe('RideMate API', () => {
       const res = await request(app).get('/api/auth/me')
       assert.equal(res.status, 401)
     })
+
+    it('does not let a verify token be used as a password reset token', async () => {
+      const { token } = await register({ email: 'purposes@test.com' })
+      // issue an email-verify token for this user
+      const verifyRes = await request(app)
+        .post('/api/auth/verify-email')
+        .set(authHeaders(token))
+      assert.equal(verifyRes.status, 200)
+
+      const row = db
+        .prepare("SELECT token FROM reset_tokens WHERE type='verify' ORDER BY id DESC LIMIT 1")
+        .get()
+      assert.ok(row, 'a verify token should exist')
+
+      // redeeming the verify token at /reset-password must fail
+      const reset = await request(app)
+        .post('/api/auth/reset-password')
+        .send({ token: row.token, password: 'newpassword1' })
+      assert.equal(reset.status, 400)
+
+      // redeeming it at /verify-email/confirm must succeed
+      const confirm = await request(app)
+        .post('/api/auth/verify-email/confirm')
+        .send({ token: row.token })
+      assert.equal(confirm.status, 200)
+    })
+
+    it('does not let a password reset token verify an email', async () => {
+      const { token } = await register({ email: 'purposes2@test.com' })
+      const forgot = await request(app)
+        .post('/api/auth/forgot-password')
+        .send({ email: 'purposes2@test.com' })
+      assert.equal(forgot.status, 200)
+
+      const row = db
+        .prepare("SELECT token FROM reset_tokens WHERE type='reset' ORDER BY id DESC LIMIT 1")
+        .get()
+      assert.ok(row, 'a reset token should exist')
+
+      // redeeming the reset token at /verify-email/confirm must fail
+      const confirm = await request(app)
+        .post('/api/auth/verify-email/confirm')
+        .send({ token: row.token })
+      assert.equal(confirm.status, 400)
+
+      // redeeming it at /reset-password must succeed
+      const reset = await request(app)
+        .post('/api/auth/reset-password')
+        .send({ token: row.token, password: 'newpassword2' })
+      assert.equal(reset.status, 200)
+    })
   })
 
   describe('rides', () => {

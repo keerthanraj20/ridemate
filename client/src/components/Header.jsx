@@ -34,8 +34,10 @@ export default function Header() {
   }, [])
 
   function openPanel() {
-    setOpen((v) => !v)
-    if (!open && unread > 0) markRead([])
+    // Open/close the panel. When opening with unread items, mark them read.
+    const willOpen = !open
+    setOpen(willOpen)
+    if (willOpen && unread > 0) markRead([])
   }
 
   return (

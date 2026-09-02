@@ -31,7 +31,10 @@ function ChatView({ rideId }) {
 
   useEffect(() => {
     load()
-    pollRef.current = setInterval(load, 4000)
+    const tick = () => {
+      if (document.visibilityState === 'visible') load()
+    }
+    pollRef.current = setInterval(tick, 4000)
     return () => clearInterval(pollRef.current)
   }, [load])
 
@@ -136,9 +139,6 @@ export default function Messages() {
     try {
       const data = await api('/messages')
       setConversations(data.conversations)
-      if (!active && data.conversations.length > 0) {
-        // first conversation auto-selects on desktop
-      }
     } catch (err) {
       toast(err.message, 'bad')
     }
@@ -146,9 +146,13 @@ export default function Messages() {
 
   useEffect(() => { load() }, [])
 
-  // refresh conversation list periodically (to update last message / unread)
+  // refresh conversation list periodically (to update last message / unread),
+  // pausing when the tab is hidden
   useEffect(() => {
-    const t = setInterval(load, 8000)
+    const tick = () => {
+      if (document.visibilityState === 'visible') load()
+    }
+    const t = setInterval(tick, 8000)
     return () => clearInterval(t)
   }, [])
 

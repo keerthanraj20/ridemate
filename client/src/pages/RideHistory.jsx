@@ -65,7 +65,7 @@ function RatingModal({ ride, onClose, onRated }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="card modal-card" onClick={(e) => e.stopPropagation()}>
-        <h3>Rate {isOwner ? 'Rider' : 'Driver'}</h3>
+        <h3>Rate {isOwner ? 'Rider' : 'Owner'}</h3>
         {isOwner && ride._acceptedRiders?.length > 1 && (
           <div style={{ margin: '10px 0' }}>
             <label className="lbl">Which rider?</label>

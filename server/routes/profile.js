@@ -57,12 +57,23 @@ router.put('/profile', auth, (req, res) => {
 })
 
 // ---- Upload / update profile avatar (base64 data-URI or raw base64) ----
+// Only raster formats are accepted. SVG (and any other markup-carrying type)
+// is rejected because a data-URI SVG can embed script and is an XSS vector.
+const ALLOWED_AVATAR_MIMES = new Set([
+  'data:image/png;base64,',
+  'data:image/jpeg;base64,',
+  'data:image/jpg;base64,',
+  'data:image/webp;base64,',
+  'data:image/gif;base64,',
+])
+
 router.put('/profile/avatar', auth, (req, res) => {
   const { avatar } = req.body || {}
   if (!avatar) return res.status(400).json({ error: 'No image provided' })
 
   const trimmed = String(avatar).trim()
-  if (!trimmed.startsWith('data:image/')) return res.status(400).json({ error: 'Invalid image format' })
+  if (!ALLOWED_AVATAR_MIMES.has(trimmed.slice(0, trimmed.indexOf(',') + 1)))
+    return res.status(400).json({ error: 'Avatar must be a PNG, JPEG, WebP or GIF image' })
 
   // Enforce ~1 MB max (base64 string length)
   if (trimmed.length > 1_400_000) return res.status(400).json({ error: 'Image must be under 1 MB' })

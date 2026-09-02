@@ -6,11 +6,14 @@ import { hashPassword, verifyPassword, publicUser } from '../util.js'
 import { sendMail } from '../mail.js'
 
 const router = Router()
-const SECRET = process.env.JWT_SECRET
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173'
+
+// Read env values lazily (at call time) — routes are imported before
+// dotenv loads, so a module-level constant would capture `undefined`.
+const SECRET = () => process.env.JWT_SECRET
+const CLIENT_URL = () => process.env.CLIENT_URL || 'http://localhost:5173'
 
 export function sign(u) {
-  return jwt.sign({ id: u.id }, SECRET, { expiresIn: '7d' })
+  return jwt.sign({ id: u.id }, SECRET(), { expiresIn: '7d' })
 }
 
 export function auth(req, res, next) {
@@ -18,7 +21,7 @@ export function auth(req, res, next) {
   const token = header.startsWith('Bearer ') ? header.slice(7) : null
   if (!token) return res.status(401).json({ error: 'Please log in first' })
   try {
-    req.user = jwt.verify(token, SECRET)
+    req.user = jwt.verify(token, SECRET())
     next()
   } catch {
     return res.status(401).json({ error: 'Session expired, please log in again' })
@@ -67,9 +70,9 @@ router.post('/forgot-password', (req, res) => {
 
   const token = crypto.randomBytes(32).toString('hex')
   const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString()
-  db.prepare('INSERT INTO reset_tokens (user_id, token, expires_at) VALUES (?,?,?)').run(user.id, token, expires)
+  db.prepare("INSERT INTO reset_tokens (user_id, token, type, expires_at) VALUES (?,?,'reset',?)").run(user.id, token, expires)
 
-  const resetUrl = `${CLIENT_URL}/reset-password?token=${token}`
+  const resetUrl = `${CLIENT_URL()}/reset-password?token=${token}`
   sendMail({
     to: user.email,
     subject: 'RideMate — Reset your password',
@@ -85,7 +88,10 @@ router.post('/reset-password', (req, res) => {
   if (!token || !password) return res.status(400).json({ error: 'Token and new password are required' })
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' })
 
-  const row = db.prepare("SELECT * FROM reset_tokens WHERE token=? AND used=0 AND expires_at > datetime('now')").get(token)
+  const row = db
+    .prepare("SELECT * FROM reset_tokens WHERE token=? AND type='reset' AND used=0 AND expires_at > datetime('now')")
+    .get(token)
+
   if (!row) return res.status(400).json({ error: 'Invalid or expired token' })
 
   db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(password), row.user_id)
@@ -101,9 +107,9 @@ router.post('/verify-email', auth, async (req, res) => {
 
   const token = crypto.randomBytes(32).toString('hex')
   const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-  db.prepare('INSERT INTO reset_tokens (user_id, token, expires_at) VALUES (?,?,?)').run(user.id, token, expires)
+  db.prepare("INSERT INTO reset_tokens (user_id, token, type, expires_at) VALUES (?,?,'verify',?)").run(user.id, token, expires)
 
-  const verifyUrl = `${CLIENT_URL}/verify-email?token=${token}`
+  const verifyUrl = `${CLIENT_URL()}/verify-email?token=${token}`
   await sendMail({
     to: user.email,
     subject: 'RideMate — Verify your email',
@@ -118,7 +124,9 @@ router.post('/verify-email/confirm', (req, res) => {
   const { token } = req.body || {}
   if (!token) return res.status(400).json({ error: 'Token is required' })
 
-  const row = db.prepare("SELECT * FROM reset_tokens WHERE token=? AND used=0 AND expires_at > datetime('now')").get(token)
+  const row = db
+    .prepare("SELECT * FROM reset_tokens WHERE token=? AND type='verify' AND used=0 AND expires_at > datetime('now')")
+    .get(token)
   if (!row) return res.status(400).json({ error: 'Invalid or expired token' })
 
   db.prepare('UPDATE users SET email_verified=1 WHERE id=?').run(row.user_id)

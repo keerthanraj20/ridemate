@@ -89,7 +89,7 @@ router.get('/rides/search', (req, res) => {
 
   let rows = db
     .prepare(
-      `SELECT r.*, u.name AS owner_name, u.phone AS owner_phone, u.bio AS owner_bio FROM rides r JOIN users u ON u.id=r.user_id
+      `SELECT r.*, u.name AS owner_name, u.phone AS owner_phone, u.bio AS owner_bio, u.email_verified AS owner_verified FROM rides r JOIN users u ON u.id=r.user_id
        WHERE r.status='open' AND r.depart_at >= datetime('now','-30 minutes')
        ORDER BY r.depart_at ASC LIMIT 200`
     )
@@ -149,6 +149,7 @@ router.get('/rides/search', (req, res) => {
     ...r,
     owner_rating: ownerStats.get(r.user_id)?.avg_rating || null,
     owner_ratings_count: ownerStats.get(r.user_id)?.total_ratings || 0,
+    owner_verified: r.email_verified ? 1 : 0,
   }))
 
   let results
@@ -330,17 +331,27 @@ for (const action of ['accept', 'reject']) {
     if (row.status !== 'pending') return res.status(400).json({ error: `This request was already ${row.status}` })
 
     if (action === 'accept') {
+      // Atomically reserve a seat. The transaction re-check is what makes
+      // concurrent accepts safe: better-sqlite3 serializes transactions, so
+      // two simultaneous accepts cannot both pass the free-seat check.
+      const acceptTx = db.transaction(() => {
+        const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(row.ride_id)
+        const free = ride.seats_total - seatsTaken(ride.id)
+        if (row.seats > free) return { error: `Not enough seats left (${free} free)` }
+
+        // Re-check the request is still pending inside the transaction.
+        const cur = db.prepare('SELECT status FROM requests WHERE id=?').get(row.id)
+        if (cur.status !== 'pending') return { error: `This request was already ${cur.status}` }
+
+        db.prepare('UPDATE requests SET status=? WHERE id=?').run('accepted', row.id)
+        refreshStatus(row.ride_id)
+        return { ride }
+      })
+      const out = acceptTx()
+      if (out && out.error) return res.status(400).json({ error: out.error })
+
       const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(row.ride_id)
-      const free = ride.seats_total - seatsTaken(ride.id)
-      if (row.seats > free) return res.status(400).json({ error: `Not enough seats left (${free} free)` })
-    }
-
-    db.prepare('UPDATE requests SET status=? WHERE id=?').run(action === 'accept' ? 'accepted' : 'rejected', row.id)
-    refreshStatus(row.ride_id)
-
-    const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(row.ride_id)
-    const ownerName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
-    if (action === 'accept') {
+      const ownerName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
       notify(row.rider_id, {
         type: 'accept',
         title: 'Your seat is confirmed! 🎉',
@@ -348,6 +359,11 @@ for (const action of ['accept', 'reject']) {
         link: '/my-rides',
       })
     } else {
+      db.prepare('UPDATE requests SET status=? WHERE id=?').run('rejected', row.id)
+      refreshStatus(row.ride_id)
+
+      const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(row.ride_id)
+      const ownerName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
       notify(row.rider_id, {
         type: 'reject',
         title: 'Request declined',
@@ -504,16 +520,25 @@ router.get('/rides/history', auth, (req, res) => {
     )
     .all(req.user.id)
 
-  const offeredWithRiders = offered.map((r) => ({
-    ...r,
-    _acceptedRiders: db
+  // Batch-fetch accepted riders for all offered rides (avoids per-ride N+1).
+  let ridersByRide = new Map()
+  if (offered.length > 0) {
+    const placeholders = offered.map(() => '?').join(',')
+    const riderRows = db
       .prepare(
-        `SELECT q.rider_id AS id, u.name FROM requests q
+        `SELECT q.ride_id, q.rider_id AS id, u.name FROM requests q
          JOIN users u ON u.id=q.rider_id
-         WHERE q.ride_id=? AND q.status='accepted'`
+         WHERE q.ride_id IN (${placeholders}) AND q.status='accepted'
+         ORDER BY q.created_at ASC`
       )
-      .all(r.id),
-  }))
+      .all(...offered.map((r) => r.id))
+    for (const rr of riderRows) {
+      if (!ridersByRide.has(rr.ride_id)) ridersByRide.set(rr.ride_id, [])
+      ridersByRide.get(rr.ride_id).push({ id: rr.id, name: rr.name })
+    }
+  }
+
+  const offeredWithRiders = offered.map((r) => ({ ...r, _acceptedRiders: ridersByRide.get(r.id) || [] }))
 
   const acceptedIds = db
     .prepare("SELECT ride_id FROM requests WHERE rider_id=? AND status='accepted'")

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react'
+import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import { api } from './api.js'
 import { useAuth } from './AuthContext.jsx'
 
@@ -10,7 +10,6 @@ export function NotificationsProvider({ children }) {
   const { user } = useAuth()
   const [items, setItems] = useState([])
   const [unread, setUnread] = useState(0)
-  const timerRef = useRef(null)
 
   const load = useCallback(
     async (silent = true) => {
@@ -33,16 +32,40 @@ export function NotificationsProvider({ children }) {
   useEffect(() => {
     load()
     if (!user) return
-    timerRef.current = setInterval(load, 12000)
-    return () => clearInterval(timerRef.current)
+
+    let interval = null
+    const visible = () => document.visibilityState === 'visible'
+    const start = () => {
+      if (visible()) {
+        load()
+        interval = setInterval(load, 12000)
+      }
+    }
+    const stop = () => {
+      clearInterval(interval)
+      interval = null
+    }
+    const onVis = () => (visible() ? start() : stop())
+
+    start()
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVis)
+    }
   }, [user, load])
 
   const markRead = useCallback(
     async (ids) => {
       try {
         await api('/notifications/read', { method: 'POST', body: { ids } })
-        setUnread(0)
-        setItems((prev) => (Array.isArray(ids) && ids.length ? prev.map((n) => (ids.includes(n.id) ? { ...n, read: 1 } : n)) : prev.map((n) => ({ ...n, read: 1 }))))
+        const fresh = await api('/notifications').catch(() => null)
+        if (fresh) {
+          setItems(fresh.notifications || [])
+          setUnread(fresh.count || 0)
+        } else {
+          setItems((prev) => prev.map((n) => ({ ...n, read: 1 })))
+        }
       } catch {
         /* ignore */
       }

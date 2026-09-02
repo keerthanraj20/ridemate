@@ -20,11 +20,12 @@ CREATE TABLE IF NOT EXISTS users (
   created_at        TEXT DEFAULT (datetime('now'))
 );
 
--- password reset tokens
+-- password reset tokens (type: 'reset' | 'verify' — verifies email)
 CREATE TABLE IF NOT EXISTS reset_tokens (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id    INTEGER NOT NULL REFERENCES users(id),
   token      TEXT NOT NULL,
+  type       TEXT NOT NULL DEFAULT 'reset' CHECK (type IN ('reset','verify')),
   expires_at TEXT NOT NULL,
   used       INTEGER NOT NULL DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
@@ -142,6 +143,7 @@ ensureColumn('rides', 'repeat_every', "TEXT DEFAULT 'none'")
 ensureColumn('rides', 'repeat_parent_id', 'INTEGER DEFAULT NULL')
 ensureColumn('rides', 'repeat_child_on', "TEXT DEFAULT NULL")
 ensureColumn('messages', 'read', 'INTEGER NOT NULL DEFAULT 0')
+ensureColumn('reset_tokens', 'type', "TEXT NOT NULL DEFAULT 'reset'")
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_reset_user ON reset_tokens(user_id)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_rides_repeat ON rides(repeat_parent_id)`)

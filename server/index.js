@@ -33,7 +33,9 @@ app.use(
     },
   })
 )
-app.use(express.json())
+// 2.5 MB body limit: avatars are uploaded as base64 data-URIs (~1.4x the
+// binary size), so the default 100kb limit would reject even a small picture.
+app.use(express.json({ limit: '2.5mb' }))
 
 // Rate limiting (skipped in tests via RM_DISABLE_RATE_LIMIT)
 const loginLimiter = rateLimit({
@@ -52,10 +54,21 @@ const generalLimiter = rateLimit({
   legacyHeaders: false,
   skip: () => process.env.RM_DISABLE_RATE_LIMIT === '1',
 })
+// Profile avatars are ~1MB uploads, so throttle the upload path harder than
+// the general limit to stop a single account flooding large bodies.
+const avatarLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,   // 1 min
+  max: 10,                    // 10 avatar uploads per min
+  message: { error: 'Too many avatar uploads, slow down' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.RM_DISABLE_RATE_LIMIT === '1',
+})
 
 app.get('/api/health', (req, res) => res.json({ ok: true, app: 'RideMate API' }))
 app.use('/api/auth', loginLimiter, authRoutes)
 app.use('/api', generalLimiter, rideRoutes)
+app.use('/api/profile/avatar', avatarLimiter)
 app.use('/api', generalLimiter, profileRoutes)
 app.use('/api', generalLimiter, notificationRoutes)
 
