@@ -2,7 +2,7 @@ import { Router } from 'express'
 import jwt from 'jsonwebtoken'
 import crypto from 'node:crypto'
 import { db } from '../db.js'
-import { hashPassword, verifyPassword, publicUser } from '../util.js'
+import { hashPassword, verifyPassword, meUser } from '../util.js'
 import { sendMail } from '../mail.js'
 
 const router = Router()
@@ -13,7 +13,7 @@ const SECRET = () => process.env.JWT_SECRET
 const CLIENT_URL = () => process.env.CLIENT_URL || 'http://localhost:5173'
 
 export function sign(u) {
-  return jwt.sign({ id: u.id }, SECRET(), { expiresIn: '7d' })
+  return jwt.sign({ id: u.id, is_admin: u.is_admin ? 1 : 0 }, SECRET(), { expiresIn: '7d' })
 }
 
 export function auth(req, res, next) {
@@ -21,11 +21,23 @@ export function auth(req, res, next) {
   const token = header.startsWith('Bearer ') ? header.slice(7) : null
   if (!token) return res.status(401).json({ error: 'Please log in first' })
   try {
-    req.user = jwt.verify(token, SECRET())
+    const payload = jwt.verify(token, SECRET())
+    // Re-check suspension against the DB so bans apply immediately (not
+    // waiting for the 7-day token to expire).
+    const u = db.prepare('SELECT * FROM users WHERE id=?').get(payload.id)
+    if (!u) return res.status(401).json({ error: 'Account not found' })
+    if (u.is_suspended) return res.status(403).json({ error: 'This account has been suspended.' })
+    req.user = u
     next()
   } catch {
     return res.status(401).json({ error: 'Session expired, please log in again' })
   }
+}
+
+// Mount a router only for admin users. Place BEFORE a generic router.
+export function requireAdmin(req, res, next) {
+  if (!req.user || !req.user.is_admin) return res.status(403).json({ error: 'Admins only' })
+  next()
 }
 
 router.post('/register', (req, res) => {
@@ -43,7 +55,7 @@ router.post('/register', (req, res) => {
     .run(name.trim(), email.trim().toLowerCase(), phone.trim(), hashPassword(password))
 
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(Number(info.lastInsertRowid))
-  res.json({ token: sign(user), user: publicUser(user) })
+  res.json({ token: sign(user), user: meUser(user) })
 })
 
 router.post('/login', (req, res) => {
@@ -52,13 +64,13 @@ router.post('/login', (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE lower(email)=lower(?)').get(String(email).trim())
   if (!user || !verifyPassword(password, user.password_hash))
     return res.status(401).json({ error: 'Wrong email or password' })
-  res.json({ token: sign(user), user: publicUser(user) })
+  res.json({ token: sign(user), user: meUser(user) })
 })
 
 router.get('/me', auth, (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id)
   if (!user) return res.status(404).json({ error: 'User not found' })
-  res.json({ user: publicUser(user) })
+  res.json({ user: meUser(user) })
 })
 
 // ---- Password reset: request token ----

@@ -1,18 +1,23 @@
 import { Router } from 'express'
 import { db } from '../db.js'
 import { auth } from './auth.js'
+import { isBlocked } from '../util.js'
 import { notify, unreadCount } from '../notify.js'
 
 const router = Router()
 
 // ---------- notifications ----------
 router.get('/notifications', auth, (req, res) => {
+  const PAGE_SIZE = Math.min(100, Math.max(1, Number(req.query.page_size) || 50))
+  const page = Math.max(1, Number(req.query.page) || 1)
+
+  const total = db.prepare('SELECT COUNT(*) AS c FROM notifications WHERE user_id=?').get(req.user.id).c
   const list = db
     .prepare(
-      'SELECT id, type, title, body, link, read, created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 60'
+      'SELECT id, type, title, body, link, read, created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?'
     )
-    .all(req.user.id)
-  res.json({ count: unreadCount(req.user.id), notifications: list })
+    .all(req.user.id, PAGE_SIZE, (page - 1) * PAGE_SIZE)
+  res.json({ count: unreadCount(req.user.id), notifications: list, page, total, hasMore: page * PAGE_SIZE < total })
 })
 
 router.post('/notifications/read', auth, (req, res) => {
@@ -76,6 +81,8 @@ router.post('/rides/:id/messages', auth, (req, res) => {
     recipientId = ride.user_id
   }
   if (!recipientId) return res.status(400).json({ error: 'No accepted rider to message' })
+  if (isBlocked(req.user.id, recipientId))
+    return res.status(403).json({ error: 'You cannot message this user' })
 
   const info = db
     .prepare('INSERT INTO messages (ride_id, sender_id, recipient_id, body) VALUES (?,?,?,?)')

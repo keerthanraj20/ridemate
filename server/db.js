@@ -145,8 +145,49 @@ ensureColumn('rides', 'repeat_child_on', "TEXT DEFAULT NULL")
 ensureColumn('messages', 'read', 'INTEGER NOT NULL DEFAULT 0')
 ensureColumn('reset_tokens', 'type', "TEXT NOT NULL DEFAULT 'reset'")
 
+db.exec(`
+-- phone verification OTP codes
+CREATE TABLE IF NOT EXISTS phone_verifications (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id),
+  code       TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- user reports (both directions; moderators review)
+CREATE TABLE IF NOT EXISTS reports (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  reporter_id INTEGER NOT NULL REFERENCES users(id),
+  reported_id INTEGER NOT NULL REFERENCES users(id),
+  ride_id     INTEGER REFERENCES rides(id),
+  reason      TEXT NOT NULL,
+  details     TEXT,
+  status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','reviewed','actioned','dismissed')),
+  created_at  TEXT DEFAULT (datetime('now')),
+  UNIQUE (reporter_id, reported_id, ride_id)
+);
+
+-- user blocks (either party blocks the other from messaging/booking)
+CREATE TABLE IF NOT EXISTS blocked_users (
+  blocker_id INTEGER NOT NULL REFERENCES users(id),
+  blocked_id INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (blocker_id, blocked_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_phone_verify_user ON phone_verifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
+CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports(reported_id);
+CREATE INDEX IF NOT EXISTS idx_blocked_blocked ON blocked_users(blocked_id);
+`)
+
+// users moderation + trust columns (migrate onto existing DBs)
+ensureColumn('users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0')
+ensureColumn('users', 'is_suspended', 'INTEGER NOT NULL DEFAULT 0')
+ensureColumn('users', 'phone_verified', 'INTEGER NOT NULL DEFAULT 0')
+
 db.exec(`CREATE INDEX IF NOT EXISTS idx_reset_user ON reset_tokens(user_id)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_rides_repeat ON rides(repeat_parent_id)`)
-
-// index on the newly-migrated messages.read column (depends on migration above)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_msg_recip ON messages(recipient_id, read)`)

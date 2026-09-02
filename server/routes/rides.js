@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import jwt from 'jsonwebtoken'
 import { db } from '../db.js'
-import { distanceKm } from '../util.js'
+import { distanceKm, isBlocked } from '../util.js'
 import { auth } from './auth.js'
 import { notify } from '../notify.js'
 
@@ -86,6 +86,9 @@ router.post('/rides', auth, (req, res) => {
 // Pass from_* & to_* coords to match trips that start near you AND end near your destination.
 router.get('/rides/search', (req, res) => {
   const viewer = req.headers.authorization ? tryAuth(req) : null
+
+  const PAGE_SIZE = Math.min(100, Math.max(1, Number(req.query.page_size) || 50))
+  const page = Math.max(1, Number(req.query.page) || 1)
 
   let rows = db
     .prepare(
@@ -172,7 +175,15 @@ router.get('/rides/search', (req, res) => {
     )
   }
 
-  res.json({ results: withMyStatus(results, viewer?.id) })
+  const total = results.length
+  const slice = results.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  res.json({
+    results: withMyStatus(slice, viewer?.id),
+    page,
+    pageSize: PAGE_SIZE,
+    total,
+    hasMore: page * PAGE_SIZE < total,
+  })
 })
 
 // ---------- my offered rides + incoming requests (owner) ----------
@@ -270,6 +281,7 @@ router.post('/rides/:id/request', auth, (req, res) => {
   const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
   if (ride.user_id === req.user.id) return res.status(400).json({ error: 'This is your own ride 🙂' })
+  if (isBlocked(ride.user_id, req.user.id)) return res.status(403).json({ error: 'You cannot request rides from this user' })
   if (ride.status !== 'open') return res.status(400).json({ error: 'This ride is no longer taking requests' })
   if (new Date(ride.depart_at).getTime() < Date.now()) return res.status(400).json({ error: 'This ride already departed' })
 
@@ -567,9 +579,17 @@ router.get('/rides/history', auth, (req, res) => {
     ratings.forEach((r) => ratingsMap.set(r.ride_id, r))
   }
 
+  const totalJoined = joined.length
+  const PAGE_SIZE = Math.min(100, Math.max(1, Number(req.query.page_size) || 20))
+  const page = Math.max(1, Number(req.query.page) || 1)
+  const joinedPage = joined.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+
   res.json({
     offered: offeredWithRiders.map((r) => ({ ...r, myRating: ratingsMap.get(r.id) || null })),
-    joined: joined.map((r) => ({ ...r, myRating: ratingsMap.get(r.id) || null })),
+    joined: joinedPage.map((r) => ({ ...r, myRating: ratingsMap.get(r.id) || null })),
+    page,
+    totalJoined,
+    hasMore: page * PAGE_SIZE < totalJoined,
   })
 })
 

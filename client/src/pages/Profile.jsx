@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { User, Mail, Phone, AlertTriangle } from 'lucide-react'
+import { User, Mail, Phone, AlertTriangle, ShieldCheck, Trash2 } from 'lucide-react'
 import { api } from '../api.js'
 import { useAuth } from '../AuthContext.jsx'
 import { initials, fmtDT, trustLevel, trustBadge } from '../utils.js'
@@ -49,6 +49,11 @@ export default function Profile() {
   const [form, setForm] = useState({ name: '', phone: '', bio: '' })
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState(false)
+  const [phoneStage, setPhoneStage] = useState('idle') // idle | sent | verifying
+  const [phoneCode, setPhoneCode] = useState('')
+  const [phoneBusy, setPhoneBusy] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
 
   useEffect(() => {
     api('/profile').then(setData).catch((err) => {
@@ -118,6 +123,39 @@ export default function Profile() {
     } catch (err) { toast(err.message, 'bad') }
   }
 
+  async function sendPhoneCode() {
+    setPhoneBusy(true)
+    try {
+      await api('/phone/send-code', { method: 'POST' })
+      setPhoneStage('sent')
+      toast('Verification code sent to your email')
+    } catch (err) { toast(err.message, 'bad') }
+    finally { setPhoneBusy(false) }
+  }
+
+  async function verifyPhone() {
+    setPhoneBusy(true)
+    try {
+      const res = await api('/phone/verify', { method: 'POST', body: { code: phoneCode } })
+      updateUser(res.user)
+      setData((d) => ({ ...d, user: res.user, verification: { ...d.verification, phoneVerified: true } }))
+      setPhoneStage('idle')
+      setPhoneCode('')
+      toast('Phone verified!')
+    } catch (err) { toast(err.message, 'bad') }
+    finally { setPhoneBusy(false) }
+  }
+
+  async function deleteAccount() {
+    setDeleteBusy(true)
+    try {
+      await api('/account', { method: 'DELETE' })
+      toast('Account deleted. Goodbye!')
+      window.location.href = '/'
+    } catch (err) { toast(err.message, 'bad'); setConfirmingDelete(false) }
+    finally { setDeleteBusy(false) }
+  }
+
   return (
     <div className="page fade-in">
       <div className="page-head">
@@ -152,6 +190,30 @@ export default function Profile() {
                 ) : (
                   <span className="chip trust trust-ok" style={{ marginTop: 8 }}>✅ Email verified</span>
                 )}
+                <div style={{ marginTop: 8 }}>
+                  {data.verification.phoneVerified ? (
+                    <span className="chip trust trust-ok"><ShieldCheck size={13} /> Phone verified</span>
+                  ) : phoneStage === 'idle' ? (
+                    <button className="btn ghost sm" onClick={sendPhoneCode} disabled={phoneBusy}>
+                      <ShieldCheck size={14} /> Verify phone
+                    </button>
+                  ) : (
+                    <div className="row" style={{ gap: 8 }}>
+                      <input
+                        className="input sm"
+                        style={{ width: 120 }}
+                        placeholder="6-digit code"
+                        value={phoneCode}
+                        maxLength={6}
+                        onChange={(e) => setPhoneCode(e.target.value.replace(/\D/g, ''))}
+                      />
+                      <button className="btn primary sm" onClick={verifyPhone} disabled={phoneBusy || phoneCode.length !== 6}>
+                        {phoneBusy ? 'Verifying...' : 'Confirm'}
+                      </button>
+                      <button className="btn ghost sm" onClick={() => setPhoneStage('idle')}>Cancel</button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -220,6 +282,24 @@ export default function Profile() {
             ))}
           </div>
         </div>
+      </div>
+
+      <div className="card danger-zone">
+        <h4><Trash2 size={16} /> <span className="text-danger">Delete account</span></h4>
+        <p className="hint">This permanently deletes your personal data. Your name, email and phone will be anonymized and you can no longer log in.</p>
+        {!confirmingDelete ? (
+          <button className="btn danger sm" onClick={() => setConfirmingDelete(true)}>
+            <Trash2 size={14} /> Delete my account
+          </button>
+        ) : (
+          <div className="row" style={{ gap: 8 }}>
+            <span className="hint">Are you sure?</span>
+            <button className="btn danger sm" onClick={deleteAccount} disabled={deleteBusy}>
+              {deleteBusy ? 'Deleting...' : 'Yes, delete'}
+            </button>
+            <button className="btn ghost sm" onClick={() => setConfirmingDelete(false)}>Cancel</button>
+          </div>
+        )}
       </div>
     </div>
   )

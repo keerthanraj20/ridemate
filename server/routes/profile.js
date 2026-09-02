@@ -34,6 +34,8 @@ router.get('/profile', auth, (req, res) => {
     verification: {
       hasPhone: Boolean(user.phone && user.phone.trim().length >= 6),
       hasBio: Boolean(user.bio && user.bio.trim()),
+      emailVerified: Boolean(user.email_verified),
+      phoneVerified: Boolean(user.phone_verified),
       ridesOffered,
       ridesJoined,
     },

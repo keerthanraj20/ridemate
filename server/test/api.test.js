@@ -318,4 +318,97 @@ describe('RideMate API', () => {
       assert.equal(res.body.totalRatings, 0)
     })
   })
+
+  describe('safety (phone, reports, blocks, account deletion)', () => {
+    beforeEach(() => {
+      truncateAll(db)
+    })
+
+    async function users() {
+      const a = (await register({ email: 'safe-a@test.com' })).token
+      const b = (await register({ email: 'safe-b@test.com' })).token
+      return { a, b }
+    }
+
+    it('verifies a phone via OTP issued to the account', async () => {
+      const { a } = await users()
+      const send = await request(app).post('/api/phone/send-code').set(authHeaders(a)).send({ phone: '9876543210' })
+      assert.equal(send.status, 200)
+
+      const code = db.prepare("SELECT code FROM phone_verifications WHERE used=0 ORDER BY id DESC LIMIT 1").get().code
+      const verify = await request(app).post('/api/phone/verify').set(authHeaders(a)).send({ code })
+      assert.equal(verify.status, 200)
+      assert.equal(verify.body.user.phone_verified, 1)
+    })
+
+    it('rejects a wrong OTP', async () => {
+      const { a } = await users()
+      await request(app).post('/api/phone/send-code').set(authHeaders(a)).send({ phone: '9876543210' })
+      const verify = await request(app).post('/api/phone/verify').set(authHeaders(a)).send({ code: '000000' })
+      assert.equal(verify.status, 400)
+      assert.equal(verify.body.user, undefined)
+    })
+
+    it('allows reporting a user and blocks duplicate reports', async () => {
+      const { a, b } = await users()
+      const me = await request(app).get('/api/auth/me').set(authHeaders(b))
+      const reportedId = me.body.user.id
+
+      const r = await request(app).post(`/api/users/${reportedId}/report`).set(authHeaders(a)).send({ reason: 'Harassment' })
+      assert.equal(r.status, 200)
+
+      const dup = await request(app).post(`/api/users/${reportedId}/report`).set(authHeaders(a)).send({ reason: 'Harassment' })
+      assert.equal(dup.status, 409)
+    })
+
+    it('blocks a user and blocks them from requesting a ride', async () => {
+      const { a, b } = await users()
+      // a is owner of a ride; b blocks a
+      const ride = await offerRide(a)
+      const meA = await request(app).get('/api/auth/me').set(authHeaders(a))
+
+      const block = await request(app).post(`/api/users/${meA.body.user.id}/block`).set(authHeaders(b))
+      assert.equal(block.status, 200)
+
+      const reqRide = await request(app).post(`/api/rides/${ride.body.ride.id}/request`).set(authHeaders(b)).send({ seats: 1 })
+      assert.equal(reqRide.status, 403)
+    })
+
+    it('anonymizes the account on deletion but keeps the row', async () => {
+      const { a } = await users()
+      const me = await request(app).get('/api/auth/me').set(authHeaders(a))
+      const userId = me.body.user.id
+
+      const del = await request(app).delete('/api/account').set(authHeaders(a))
+      assert.equal(del.status, 200)
+
+      const row = db.prepare('SELECT * FROM users WHERE id=?').get(userId)
+      assert.equal(row.name, 'Deleted User')
+      assert.match(row.email, /@deleted\.ridemate\.local/)
+      assert.equal(row.is_suspended, 1)
+    })
+
+    it('admin can view reports and suspend a reported user', async () => {
+      const { a, b } = await users()
+      const meB = await request(app).get('/api/auth/me').set(authHeaders(b))
+      const report = await request(app).post(`/api/users/${meB.body.user.id}/report`).set(authHeaders(a)).send({ reason: 'Spam' })
+      assert.equal(report.status, 200)
+
+      // promote b to admin (via db) and re-login so the token carries the flag
+      db.prepare('UPDATE users SET is_admin=1 WHERE id=?').run(meB.body.user.id)
+      const admin = (await request(app).post('/api/auth/login').send({ email: 'safe-b@test.com', password: 'secret123' })).body.token
+
+      const list = await request(app).get('/api/admin/reports').set(authHeaders(admin))
+      assert.equal(list.status, 200)
+      assert.equal(list.body.reports.length, 1)
+
+      const reportId = list.body.reports[0].id
+      const action = await request(app).post(`/api/admin/reports/${reportId}/action`).set(authHeaders(admin)).send({ action: 'suspend' })
+      assert.equal(action.status, 200)
+
+      // suspended user can no longer act
+      const suspended = await request(app).get('/api/auth/me').set(authHeaders(b))
+      assert.equal(suspended.status, 403)
+    })
+  })
 })

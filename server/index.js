@@ -8,6 +8,7 @@ import authRoutes from './routes/auth.js'
 import rideRoutes from './routes/rides.js'
 import profileRoutes from './routes/profile.js'
 import notificationRoutes from './routes/notifications.js'
+import safetyRoutes from './routes/safety.js'
 import { startRecurringScheduler } from './recur.js'
 
 // .env lives at the project root (this file is in server/)
@@ -21,6 +22,10 @@ if (!process.env.JWT_SECRET) {
 
 export const app = express()
 
+// Trust a single reverse proxy (e.g. nginx/Caddy) for secure IP/HTTPS
+// detection. Set RM_TRUST_PROXY=1 in production.
+if (process.env.RM_TRUST_PROXY === '1') app.set('trust proxy', 1)
+
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map((o) => o.trim())
   : ['http://localhost:5173']
@@ -31,11 +36,36 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) cb(null, true)
       else cb(new Error('Not allowed by CORS'))
     },
+    credentials: true,
   })
 )
 // 2.5 MB body limit: avatars are uploaded as base64 data-URIs (~1.4x the
 // binary size), so the default 100kb limit would reject even a small picture.
 app.use(express.json({ limit: '2.5mb' }))
+
+// Security headers (no external dependency)
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Permissions-Policy': 'geolocation=(self)',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+  })
+  next()
+})
+
+// Minimal structured request logging (timestamp, method, route, status, ms)
+app.use((req, res, next) => {
+  const start = process.hrtime.bigint()
+  res.on('finish', () => {
+    const ms = Number(process.hrtime.bigint() - start) / 1e6
+    if (process.env.RM_DISABLE_LOG !== '1') {
+      console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl} ${res.statusCode} ${ms.toFixed(1)}ms`)
+    }
+  })
+  next()
+})
 
 // Rate limiting (skipped in tests via RM_DISABLE_RATE_LIMIT)
 const loginLimiter = rateLimit({
@@ -65,12 +95,24 @@ const avatarLimiter = rateLimit({
   skip: () => process.env.RM_DISABLE_RATE_LIMIT === '1',
 })
 
+// Email/OTP sends should be throttled harder to prevent abuse.
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,  // 15 min
+  max: 5,                     // 5 verification codes per window
+  message: { error: 'Too many verification codes, try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.RM_DISABLE_RATE_LIMIT === '1',
+})
+
 app.get('/api/health', (req, res) => res.json({ ok: true, app: 'RideMate API' }))
 app.use('/api/auth', loginLimiter, authRoutes)
 app.use('/api', generalLimiter, rideRoutes)
 app.use('/api/profile/avatar', avatarLimiter)
 app.use('/api', generalLimiter, profileRoutes)
 app.use('/api', generalLimiter, notificationRoutes)
+app.use('/api/phone/send-code', otpLimiter)
+app.use('/api', generalLimiter, safetyRoutes)
 
 // 404 + error handler
 app.use((req, res) => res.status(404).json({ error: 'Not found' }))

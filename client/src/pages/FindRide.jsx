@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Compass, MapPin, Search, SearchX, Sliders, CheckCircle2, Users, Clock, Calendar } from 'lucide-react'
+import { Compass, MapPin, Search, SearchX, Sliders, CheckCircle2, Users, Clock, Calendar, Flag, Ban } from 'lucide-react'
 import { api } from '../api.js'
 import LocationPicker from '../components/LocationPicker.jsx'
 import OSMMap from '../components/OSMMap.jsx'
@@ -40,6 +40,10 @@ export default function FindRide() {
   const [fMaxPrice, setFMaxPrice] = useState('')
   const [fRepeat, setFRepeat] = useState('')
   const [results, setResults] = useState(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [page, setPage] = useState(1)
+  const [reportFor, setReportFor] = useState(null) // ride id we're reporting
+  const [reportReason, setReportReason] = useState('')
   const [loading, setLoading] = useState(false)
   const [openForm, setOpenForm] = useState(null)
   const [req, setReq] = useState({ seats: 1, message: '' })
@@ -55,6 +59,8 @@ export default function FindRide() {
       const qs = new URLSearchParams(Object.entries({ ...filters(), ...params }).filter(([, v]) => v !== '' && v != null)).toString()
       const data = await api(`/rides/search${qs ? `?${qs}` : ''}`, { signal: ctrl.signal })
       setResults(data.results)
+      setHasMore(!!data.hasMore)
+      setPage(data.page || 1)
     } catch (err) {
       if (err.name !== 'AbortError') toast(err.message, 'bad')
       return
@@ -105,8 +111,40 @@ export default function FindRide() {
     }
   }
 
-  function handleMapPick([lat, lng]) {
-    if (pickMode === 'from') {
+  async function loadMore() {
+    try {
+      const qs = new URLSearchParams(Object.entries({ ...filters(), page: page + 1 }).filter(([, v]) => v !== '' && v != null)).toString()
+      const data = await api(`/rides/search?${qs}`)
+      setResults((prev) => [...(prev || []), ...data.results])
+      setHasMore(!!data.hasMore)
+      setPage(data.page || page + 1)
+    } catch (err) {
+      toast(err.message, 'bad')
+    }
+  }
+
+  async function submitReport(ride) {
+    try {
+      if (!reportReason.trim()) return toast('Enter or choose a reason', 'bad')
+      await api(`/users/${ride.user_id}/report`, { method: 'POST', body: { reason: reportReason, ride_id: ride.id } })
+      toast('Report submitted. Our team will review it.')
+      setReportFor(null)
+      setReportReason('')
+    } catch (err) {
+      toast(err.message, 'bad')
+    }
+  }
+
+  async function blockUser(ride) {
+    try {
+      await api(`/users/${ride.user_id}/block`, { method: 'POST' })
+      toast('User blocked. They can no longer message or request your rides.')
+    } catch (err) {
+      toast(err.message, 'bad')
+    }
+  }
+
+  function handleMapPick([lat, lng]) {    if (pickMode === 'from') {
       setFrom({ name: `${lat.toFixed(4)}, ${lng.toFixed(4)}`, lat, lng })
     } else if (pickMode === 'to') {
       setTo({ name: `${lat.toFixed(4)}, ${lng.toFixed(4)}`, lat, lng })
@@ -259,6 +297,14 @@ export default function FindRide() {
                       <span className="rc-price-val">{priceLabel(r.price)}</span>
                       <span className="rc-price-sub">per seat</span>
                     </div>
+                    <div className="rc-actions">
+                      <button className="icon-btn" title="Report this user" onClick={() => { setReportFor(reportFor === r.id ? null : r.id); setReportReason('') }}>
+                        <Flag size={15} />
+                      </button>
+                      <button className="icon-btn" title="Block this user" onClick={() => blockUser(r)}>
+                        <Ban size={15} />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Route: vertical dots + from/to */}
@@ -330,9 +376,41 @@ export default function FindRide() {
                   </div>
 
                   {r.notes && <p className="notes">"{r.notes}"</p>}
+
+                  {reportFor === r.id && (
+                    <div className="req-form stack fade-in" style={{ marginTop: 10 }}>
+                      <b style={{ fontSize: 13 }}>Report {r.owner_name}</b>
+                      <div className="row" style={{ flexWrap: 'wrap' }}>
+                        {['Harassment', 'Fake listing', 'No-show', 'Other'].map((opt) => (
+                          <button
+                            key={opt}
+                            type="button"
+                            className={`chip pick ${reportReason === opt ? 'sel' : ''}`}
+                            onClick={() => setReportReason(opt)}
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        className="input"
+                        placeholder="More detail (optional)"
+                        value={reportReason}
+                        onChange={(e) => setReportReason(e.target.value)}
+                      />
+                      <div className="row">
+                        <button className="btn danger sm" onClick={() => submitReport(r)}>Submit report</button>
+                        <button className="btn ghost sm" onClick={() => { setReportFor(null); setReportReason('') }}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )
             })}
+
+          {hasMore && (
+            <button className="btn ghost center-block" onClick={loadMore}>Load more trips</button>
+          )}
         </div>
     </div>
   )

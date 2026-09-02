@@ -21,6 +21,9 @@ export function truncateAll(db) {
     DELETE FROM requests;
     DELETE FROM rides;
     DELETE FROM reset_tokens;
+    DELETE FROM phone_verifications;
+    DELETE FROM reports;
+    DELETE FROM blocked_users;
     DELETE FROM users;
     DELETE FROM sqlite_sequence;
     PRAGMA foreign_keys = ON;

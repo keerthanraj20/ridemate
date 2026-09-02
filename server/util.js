@@ -1,4 +1,13 @@
 import crypto from 'node:crypto'
+import { db } from './db.js'
+
+// Returns true if either direction of a block exists between two users.
+export function isBlocked(a, b) {
+  return Boolean(
+    db.prepare('SELECT 1 FROM blocked_users WHERE blocker_id=? AND blocked_id=? LIMIT 1').get(a, b) ||
+      db.prepare('SELECT 1 FROM blocked_users WHERE blocker_id=? AND blocked_id=? LIMIT 1').get(b, a)
+  )
+}
 
 export function hashPassword(pw) {
   const salt = crypto.randomBytes(16).toString('hex')
@@ -35,5 +44,11 @@ export function publicUser(u) {
     bio: u.bio || '',
     avatar: u.avatar || null,
     email_verified: u.email_verified ? 1 : 0,
+    phone_verified: u.phone_verified ? 1 : 0,
   }
+}
+
+// Developer/me view — adds moderation flags the owner needs.
+export function meUser(u) {
+  return { ...publicUser(u), is_admin: u.is_admin ? 1 : 0, is_suspended: u.is_suspended ? 1 : 0 }
 }

@@ -14,6 +14,9 @@ const Messages = lazy(() => import('./pages/Messages.jsx'))
 const SavedRoutes = lazy(() => import('./pages/SavedRoutes.jsx'))
 const Profile = lazy(() => import('./pages/Profile.jsx'))
 const RideHistory = lazy(() => import('./pages/RideHistory.jsx'))
+const Terms = lazy(() => import('./pages/Terms.jsx'))
+const Privacy = lazy(() => import('./pages/Privacy.jsx'))
+const Admin = lazy(() => import('./pages/Admin.jsx'))
 
 function PageLoader() {
   return (
@@ -27,6 +30,12 @@ function PageLoader() {
 function RequireAuth({ children }) {
   const { user } = useAuth()
   return user ? children : <Navigate to="/auth" replace />
+}
+
+function RequireAdmin({ children }) {
+  const { user } = useAuth()
+  if (!user) return <Navigate to="/auth" replace />
+  return user.is_admin ? children : <Navigate to="/find" replace />
 }
 
 function GuestOnly({ children }) {
@@ -58,6 +67,8 @@ export default function App() {
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ForgotPassword />} />
             <Route path="/verify-email" element={<VerifyEmail />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/privacy" element={<Privacy />} />
             <Route
               path="/find"
               element={
@@ -122,11 +133,25 @@ export default function App() {
                 </RequireAuth>
               }
             />
+            <Route
+              path="/admin"
+              element={
+                <RequireAdmin>
+                  <Admin />
+                </RequireAdmin>
+              }
+            />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>
       </main>
-      <footer className="foot">RideMate — no drivers, just travelers helping travelers 🤝</footer>
+      <footer className="foot">
+        RideMate — no drivers, just travelers helping travelers 🤝
+        <span className="foot-links">
+          <Link className="foot-link" to="/terms">Terms</Link>
+          <Link className="foot-link" to="/privacy">Privacy</Link>
+        </span>
+      </footer>
     </>
   )
 }

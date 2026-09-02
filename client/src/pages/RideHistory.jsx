@@ -148,11 +148,26 @@ export default function RideHistory() {
   const [tab, setTab] = useState('offered')
   const [data, setData] = useState(null)
   const [ratingRide, setRatingRide] = useState(null)
+  const [joinedPage, setJoinedPage] = useState(1)
+  const [joinedHasMore, setJoinedHasMore] = useState(false)
 
   async function load() {
     try {
       const res = await api('/rides/history')
       setData(res)
+      setJoinedPage(res.page || 1)
+      setJoinedHasMore(!!res.hasMore)
+    } catch (err) {
+      toast(err.message, 'bad')
+    }
+  }
+
+  async function loadMoreJoined() {
+    try {
+      const res = await api(`/rides/history?page=${joinedPage + 1}`)
+      setData((d) => ({ ...d, joined: [...(d?.joined || []), ...res.joined] }))
+      setJoinedPage(res.page || joinedPage + 1)
+      setJoinedHasMore(!!res.hasMore)
     } catch (err) {
       toast(err.message, 'bad')
     }
@@ -209,6 +224,10 @@ export default function RideHistory() {
             onRate={(ride) => setRatingRide({ ...ride, _role: tab === 'offered' ? 'owner' : 'rider' })}
           />
         ))}
+
+        {tab === 'joined' && joinedHasMore && (
+          <button className="btn ghost center-block" onClick={loadMoreJoined}>Load more</button>
+        )}
       </div>
 
       {ratingRide && (

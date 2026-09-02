@@ -56,6 +56,7 @@ export default function Header() {
             <NavLink to="/saved">Saved</NavLink>
             <NavLink to="/history">History</NavLink>
             <NavLink to="/profile">Profile</NavLink>
+            {user.is_admin && <NavLink to="/admin">Moderation</NavLink>}
           </nav>
           <div className="userbox">
             <div className="notif-wrap" ref={boxRef}>
