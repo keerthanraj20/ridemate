@@ -1,13 +1,13 @@
-import { DatabaseSync } from 'node:sqlite'
+import Database from 'better-sqlite3'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-export const db = new DatabaseSync(path.join(__dirname, 'ridemate.db'))
+const DB_PATH = process.env.RM_DB_PATH || path.join(__dirname, 'ridemate.db')
+export const db = new Database(DB_PATH)
+db.pragma('foreign_keys = ON')
 
 db.exec(`
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS users (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   name              TEXT NOT NULL,

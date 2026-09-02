@@ -183,27 +183,59 @@ router.get('/rides/mine', auth, (req, res) => {
     )
     .all(req.user.id)
 
+  if (rides.length === 0) return res.json({ rides: [] })
+
+  const rideIds = rides.map((r) => r.id)
+  const placeholders = rideIds.map(() => '?').join(',')
+
+  const takenMap = new Map(
+    db
+      .prepare(
+        `SELECT ride_id, COALESCE(SUM(seats),0) AS s FROM requests
+         WHERE ride_id IN (${placeholders}) AND status='accepted' GROUP BY ride_id`
+      )
+      .all(...rideIds)
+      .map((x) => [x.ride_id, x.s])
+  )
+
+  const requestRows = db
+    .prepare(
+      `SELECT q.*, u.name AS rider_name
+       FROM requests q JOIN users u ON u.id=q.rider_id
+       WHERE q.ride_id IN (${placeholders}) ORDER BY q.created_at DESC`
+    )
+    .all(...rideIds)
+
+  const requestsByRide = new Map()
+  for (const q of requestRows) {
+    if (!requestsByRide.has(q.ride_id)) requestsByRide.set(q.ride_id, [])
+    requestsByRide.get(q.ride_id).push(q)
+  }
+
+  // fetch phone only for accepted riders, batched
+  const acceptedRiderIds = [...new Set(requestRows.filter((q) => q.status === 'accepted').map((q) => q.rider_id))]
+  let phoneMap = new Map()
+  if (acceptedRiderIds.length > 0) {
+    const ph = db
+      .prepare(`SELECT id, phone FROM users WHERE id IN (${acceptedRiderIds.map(() => '?').join(',')})`)
+      .all(...acceptedRiderIds)
+    ph.forEach((u) => phoneMap.set(u.id, u.phone))
+  }
+
   const out = rides.map((r) => ({
     ...r,
-    seats_taken: seatsTaken(r.id),
-    requests: db
-      .prepare(
-        `SELECT q.*, u.name AS rider_name${''}
-         FROM requests q JOIN users u ON u.id=q.rider_id
-         WHERE q.ride_id=? ORDER BY q.created_at DESC`
-      )
-      .all(r.id)
-      .map((q) => ({
-        id: q.id,
-        ride_id: q.ride_id,
-        seats: q.seats,
-        message: q.message,
-        status: q.status,
-        created_at: q.created_at,
-        rider_id: q.rider_id,
-        rider_name: q.rider_name,
-        rider_phone: q.status === 'accepted' ? db.prepare('SELECT phone FROM users WHERE id=?').get(q.rider_id)?.phone : null,
-      })),
+    seats_taken: takenMap.get(r.id) || 0,
+    requests: (requestsByRide.get(r.id) || []).map((q) => ({
+      id: q.id,
+      ride_id: q.ride_id,
+      seats: q.seats,
+      message: q.message,
+      status: q.status,
+      created_at: q.created_at,
+      rider_id: q.rider_id,
+      rider_name: q.rider_name,
+      rider_phone: q.status === 'accepted' ? phoneMap.get(q.rider_id) || null : null,
+    })),
   }))
   res.json({ rides: out })
 })
@@ -240,22 +272,39 @@ router.post('/rides/:id/request', auth, (req, res) => {
   if (ride.status !== 'open') return res.status(400).json({ error: 'This ride is no longer taking requests' })
   if (new Date(ride.depart_at).getTime() < Date.now()) return res.status(400).json({ error: 'This ride already departed' })
 
-  const free = ride.seats_total - seatsTaken(ride.id)
   const seats = Math.floor(Number(req.body?.seats || 1))
   if (!Number.isInteger(seats) || seats < 1) return res.status(400).json({ error: 'Seats must be at least 1' })
-  if (seats > free) return res.status(400).json({ error: free <= 0 ? 'No seats left on this ride' : `Only ${free} seat(s) left` })
 
-  const dup = db
-    .prepare("SELECT id FROM requests WHERE ride_id=? AND rider_id=? AND status IN ('pending','accepted')")
-    .get(ride.id, req.user.id)
-  if (dup) return res.status(409).json({ error: 'You already requested this ride — check My Rides' })
+  const message = String(req.body?.message || '').trim().slice(0, 300)
 
-  db.prepare('INSERT INTO requests (ride_id,rider_id,seats,message) VALUES (?,?,?,?)').run(
-    ride.id,
-    req.user.id,
-    seats,
-    String(req.body?.message || '').trim().slice(0, 300)
-  )
+  // Atomic: only insert if the caller has no active request and enough seats are free.
+  // Runs as a single statement, so concurrent requests can't overbook.
+  const info = db
+    .prepare(
+      `INSERT INTO requests (ride_id, rider_id, seats, message)
+       SELECT ?, ?, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM requests
+         WHERE ride_id=? AND rider_id=? AND status IN ('pending','accepted')
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM rides WHERE id=? AND status != 'open'
+       )
+       AND (
+         SELECT COALESCE(SUM(seats),0) FROM requests
+         WHERE ride_id=? AND status='accepted'
+       ) + ? <= (SELECT seats_total FROM rides WHERE id=?)`
+    )
+    .run(ride.id, req.user.id, seats, message, ride.id, req.user.id, ride.id, ride.id, seats, ride.id)
+
+  if (info.changes === 0) {
+    const free = ride.seats_total - seatsTaken(ride.id)
+    const dup = db
+      .prepare("SELECT id FROM requests WHERE ride_id=? AND rider_id=? AND status IN ('pending','accepted')")
+      .get(ride.id, req.user.id)
+    if (dup) return res.status(409).json({ error: 'You already requested this ride — check My Rides' })
+    return res.status(400).json({ error: free <= 0 ? 'No seats left on this ride' : `Only ${free} seat(s) left` })
+  }
 
   const yourName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
   notify(ride.user_id, {
@@ -425,7 +474,7 @@ router.post('/rides/:id/rate', auth, (req, res) => {
 })
 
 // ---------- get ratings for a user ----------
-router.get('/users/:id/ratings', (req, res) => {
+router.get('/users/:id/ratings', auth, (req, res) => {
   const userId = Number(req.params.id)
   const avg = db.prepare('SELECT AVG(stars) AS avg, COUNT(*) AS c FROM ratings WHERE to_user_id=?').get(userId)
 
@@ -502,7 +551,7 @@ router.get('/rides/history', auth, (req, res) => {
 // tiny helper: verify token but never throw (used for optional auth on search)
 function tryAuth(req) {
   try {
-    return jwt.verify(String(req.headers.authorization).slice(7), process.env.JWT_SECRET || 'ridemate-dev-secret-change-me')
+    return jwt.verify(String(req.headers.authorization).slice(7), process.env.JWT_SECRET)
   } catch {
     return null
   }

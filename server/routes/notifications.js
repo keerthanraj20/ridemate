@@ -34,9 +34,6 @@ router.get('/rides/:id/messages', auth, (req, res) => {
   const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
 
-  const r = { ride, user_id: req.user.id }
-  req.ride = ride
-
   // must be owner OR an accepted rider on this ride to view the thread
   const isOwner = ride.user_id === req.user.id
   const isRider = db

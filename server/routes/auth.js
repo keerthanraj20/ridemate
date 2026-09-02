@@ -6,7 +6,8 @@ import { hashPassword, verifyPassword, publicUser } from '../util.js'
 import { sendMail } from '../mail.js'
 
 const router = Router()
-const SECRET = process.env.JWT_SECRET || 'ridemate-dev-secret-change-me'
+const SECRET = process.env.JWT_SECRET
+const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173'
 
 export function sign(u) {
   return jwt.sign({ id: u.id }, SECRET, { expiresIn: '7d' })
@@ -68,7 +69,7 @@ router.post('/forgot-password', (req, res) => {
   const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString()
   db.prepare('INSERT INTO reset_tokens (user_id, token, expires_at) VALUES (?,?,?)').run(user.id, token, expires)
 
-  const resetUrl = `http://localhost:5173/reset-password?token=${token}`
+  const resetUrl = `${CLIENT_URL}/reset-password?token=${token}`
   sendMail({
     to: user.email,
     subject: 'RideMate — Reset your password',
@@ -102,7 +103,7 @@ router.post('/verify-email', auth, async (req, res) => {
   const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
   db.prepare('INSERT INTO reset_tokens (user_id, token, expires_at) VALUES (?,?,?)').run(user.id, token, expires)
 
-  const verifyUrl = `http://localhost:5173/verify-email?token=${token}`
+  const verifyUrl = `${CLIENT_URL}/verify-email?token=${token}`
   await sendMail({
     to: user.email,
     subject: 'RideMate — Verify your email',
