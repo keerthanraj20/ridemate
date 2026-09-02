@@ -129,10 +129,21 @@ p { margin: 4px 0; line-height: 1.55; }
 .empty-emoji svg { color: var(--muted); opacity: .8; }
 .results-head h3 { color: var(--muted); font-weight: 600; margin: 20px 0 10px; font-family: 'Inter', sans-serif; font-size: 15px; }
 
+/* ---------- OpenStreetMap (Leaflet) whole-India map ---------- */
+.osmap { position: relative; z-index: 0; border-radius: 12px; overflow: hidden; }
+.osmap .leaflet-container { width: 100%; height: 100%; background: #0e1528; font: inherit; }
+.osmap .map-popup { color: #0b1126; font-weight: 600; }
+.center-map { height: 430px; border: 1px solid var(--line); }
+.tall-sm { height: 240px; border: 1px solid var(--line); margin-bottom: 4px; }
+.landing-map { height: 100%; width: 100%; border-radius: 0; }
+.map-tools { padding: 14px 18px; margin-bottom: 16px; }
+.pick-mode-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.pick-mode-bar .pick-hint { margin-left: 4px; }
+.leaflet-container a { color: #6366f1; }
+.leaflet-popup-content { margin: 8px 12px; }
+.leaflet-control-attribution { font-size: 10px; }
+
 .split { display: grid; grid-template-columns: 1.5fr 1fr; gap: 18px; align-items: start; }
-/* FindRide: single centered map on top, trips below */
-.split .map-side { grid-column: 1 / -1; }
-.center-map { width: 100%; height: 460px; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-top: 14px; }
 .pickers { margin-top: 4px; }
@@ -380,33 +391,6 @@ input[type='date'], input[type='datetime-local'] { color-scheme: dark; }
 .geo-results li:hover { background: #251d47; }
 .picked { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
 
-.map { border-radius: 12px; z-index: 0; overflow: hidden; position: relative; }
-.map.mini { height: 185px; margin-top: 10px; border: 1px solid #ffffff14; }
-.map.tall { height: 430px; border: 1px solid #ffffff14; }
-.map.strip { height: 132px; border: 1px solid #ffffff14; }
-.map-side { position: sticky; top: 80px; }
-.map-side .hint.center { text-align: center; margin-top: 8px; display: block; }
-.pick-mode-bar { display: flex; gap: 8px; margin-bottom: 8px; }
-
-.custom-map { width: 100%; height: 100%; display: block; cursor: grab; background: #0e1528; }
-.custom-map:active { cursor: grabbing; }
-.map-controls {
-  position: absolute; right: 12px; top: 12px; display: flex; flex-direction: column;
-  gap: 6px; z-index: 5;
-}
-.map-ctl {
-  width: 34px; height: 34px; border-radius: 9px; cursor: pointer;
-  background: #111c3a; border: 1px solid #2b3a6b; color: var(--text);
-  font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 6px 16px #0006; transition: background .15s;
-}
-.map-ctl:hover { background: #1b2854; }
-.map-zoom-label {
-  position: absolute; left: 12px; bottom: 12px; z-index: 5;
-  background: #111c3acc; border: 1px solid #2b3a6b; color: var(--muted);
-  font-size: 11px; padding: 4px 9px; border-radius: 8px; backdrop-filter: blur(4px);
-}
-.map-popup { pointer-events: none; }
 
 .pin {
   width: 16px; height: 16px; border-radius: 50%;
@@ -478,7 +462,6 @@ input[type='date'], input[type='datetime-local'] { color-scheme: dark; }
 @media (max-width: 900px) {
   .split, .grid-2, .vs-grid { grid-template-columns: 1fr; }
   .grid-3 { grid-template-columns: 1fr; }
-  .map-side { position: static; }
   .topbar { flex-wrap: wrap; gap: 10px; padding: 10px 3vw; }
   .nav { order: 3; width: 100%; justify-content: center; overflow-x: auto; }
   .hero { padding: 40px 20px 30px; }
@@ -495,8 +478,6 @@ input[type='date'], input[type='datetime-local'] { color-scheme: dark; }
   padding: 14px 18px; margin-bottom: 16px;
 }
 .filter-label { font-weight: 800; font-size: 13px; color: var(--muted); margin-right: 4px; display: inline-flex; align-items: center; gap: 5px; }
-.view-toggle { margin-left: auto; display: flex; gap: 6px; }
-.map.tall.big { height: 560px; }
 
 /* ---------- trust badge ---------- */
 .chip.rating { background: #34250a; color: var(--warn); }

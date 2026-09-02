@@ -67,13 +67,14 @@ export default function LocationPicker({ label, hint, value, onChange }) {
 
   return (
     <div className="picker">
-      <label className="lbl">
+      <label className="lbl" htmlFor={`loc-${label}`}>
         {label}
         {hint && <span className="hint">{hint}</span>}
       </label>
 
       <div className="geo-row">
         <input
+          id={`loc-${label}`}
           className="input"
           placeholder="Type a place or pick on map…"
           value={query}

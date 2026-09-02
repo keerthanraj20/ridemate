@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Compass, List as ListIcon, Map as MapIcon, MapPin, Search, SearchX, Sliders } from 'lucide-react'
+import { Compass, MapPin, Search, SearchX, Sliders } from 'lucide-react'
 import { api } from '../api.js'
-import MapView from '../components/MapView.jsx'
 import LocationPicker from '../components/LocationPicker.jsx'
+import OSMMap from '../components/OSMMap.jsx'
 import { vehicleEmoji, vehicleLabel, fmtDT, timeUntil, priceLabel, initials, repeatLabel, statusClass } from '../utils.js'
 import { useToast } from '../Toast.jsx'
 
@@ -44,7 +44,6 @@ export default function FindRide() {
   const [openForm, setOpenForm] = useState(null)
   const [req, setReq] = useState({ seats: 1, message: '' })
   const [pickMode, setPickMode] = useState(null)
-  const [view, setView] = useState('list')
   const abortRef = useRef(null)
 
   async function run(params) {
@@ -106,13 +105,13 @@ export default function FindRide() {
     }
   }
 
-  const handleMapPick = useCallback(([lat, lng]) => {
+  function handleMapPick([lat, lng]) {
     if (pickMode === 'from') {
       setFrom({ name: `${lat.toFixed(4)}, ${lng.toFixed(4)}`, lat, lng })
     } else if (pickMode === 'to') {
       setTo({ name: `${lat.toFixed(4)}, ${lng.toFixed(4)}`, lat, lng })
     }
-  }, [pickMode])
+  }
 
   const hasFrom = Number.isFinite(from.lat) && Number.isFinite(from.lng)
   const hasTo = Number.isFinite(to.lat) && Number.isFinite(to.lng)
@@ -125,9 +124,6 @@ export default function FindRide() {
       { pos: [r.to_lat, r.to_lng], popup: `🏁 ${r.to_name}`, color: '#ef4444' },
     ]) || []),
   ]
-
-  const mapZoom = (hasFrom || hasTo) ? 10 : 5
-  const mapCenter = hasFrom ? [from.lat, from.lng] : hasTo ? [to.lat, to.lng] : [20.5937, 78.9629]
 
   return (
     <div className="page fade-in">
@@ -162,7 +158,7 @@ export default function FindRide() {
               </button>
             )
           })}
-          <input className="input slim" type="date" min={isoDate()} value={date} onChange={(e) => setDate(e.target.value)} />
+          <input className="input slim" type="date" name="date" min={isoDate()} value={date} onChange={(e) => setDate(e.target.value)} />
         </div>
 
         <button className="btn primary lg" disabled={loading}>
@@ -172,10 +168,10 @@ export default function FindRide() {
 
       <div className="card filter-bar">
         <span className="filter-label"><Sliders size={14} /> Filters</span>
-        <select className="input slim" value={fVehicle} onChange={(e) => setFVehicle(e.target.value)} title="Vehicle type">
+        <select className="input slim" name="fVehicle" value={fVehicle} onChange={(e) => setFVehicle(e.target.value)} title="Vehicle type">
           {FILTER_VEHICLES.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
         </select>
-        <select className="input slim" value={fRepeat} onChange={(e) => setFRepeat(e.target.value)} title="Repeat schedule">
+        <select className="input slim" name="fRepeat" value={fRepeat} onChange={(e) => setFRepeat(e.target.value)} title="Repeat schedule">
           <option value="">Any schedule</option>
           <option value="none">One-time</option>
           <option value="weekdays">Weekdays</option>
@@ -185,33 +181,37 @@ export default function FindRide() {
         <input
           className="input slim"
           type="number"
+          name="fMaxPrice"
           min={0}
           placeholder="Max ₹/seat"
           value={fMaxPrice}
           onChange={(e) => setFMaxPrice(e.target.value)}
           title="Maximum price per seat"
         />
-        <div className="view-toggle">
-          <button className={`btn sm ${view === 'list' ? 'primary' : 'ghost'}`} onClick={() => setView('list')}><List size={14} /> List</button>
-          <button className={`btn sm ${view === 'map' ? 'primary' : 'ghost'}`} onClick={() => setView('map')}><MapIcon size={14} /> Map</button>
-        </div>
       </div>
 
-      <div className="split">
-        <aside className="map-side">
-          <div className="pick-mode-bar">
-            <button type="button" className={`btn sm ${pickMode === 'from' ? 'primary' : 'ghost'}`} onClick={() => setPickMode(pickMode === 'from' ? null : 'from')}>
-              <MapPin size={14} style={{ color: '#22c55e' }} /> Pick start
-            </button>
-            <button type="button" className={`btn sm ${pickMode === 'to' ? 'primary' : 'ghost'}`} onClick={() => setPickMode(pickMode === 'to' ? null : 'to')}>
-              <MapPin size={14} style={{ color: '#ef4444' }} /> Pick end
-            </button>
-          </div>
-          <MapView className={`tall center-map ${view === 'map' ? 'big' : ''}`} zoom={mapZoom} center={mapCenter} points={mapPoints} onPick={pickMode ? handleMapPick : undefined} />
-          <p className="hint center">{pickMode === 'from' ? '🟢 Tap map to set start' : pickMode === 'to' ? '🔴 Tap map to set end' : '🟢 trip starts · 🔴 trip ends'}</p>
-        </aside>
+      <div className="card map-tools">
+        <div className="pick-mode-bar">
+          <button
+            type="button"
+            className={`btn sm ${pickMode === 'from' ? 'primary' : 'ghost'}`}
+            onClick={() => setPickMode(pickMode === 'from' ? null : 'from')}
+          >
+            <MapPin size={14} style={{ color: '#22c55e' }} /> Pick start
+          </button>
+          <button
+            type="button"
+            className={`btn sm ${pickMode === 'to' ? 'primary' : 'ghost'}`}
+            onClick={() => setPickMode(pickMode === 'to' ? null : 'to')}
+          >
+            <MapPin size={14} style={{ color: '#ef4444' }} /> Pick end
+          </button>
+          {pickMode && <span className="hint pick-hint">Tap on the map to set it — or type in the boxes above</span>}
+        </div>
+        <OSMMap className="center-map" points={mapPoints} onPick={pickMode ? handleMapPick : undefined} />
+      </div>
 
-        <div className="stack-lg">
+      <div className="stack-lg">
           <div className="results-head">
             <h3>{loading ? 'Finding trips…' : `${results?.length ?? 0} trip${results?.length === 1 ? '' : 's'} available`}</h3>
           </div>
@@ -270,7 +270,7 @@ export default function FindRide() {
                   ) : openForm === r.id ? (
                     <div className="req-form stack fade-in">
                       <div className="row">
-                        <select className="input slim" value={req.seats} onChange={(e) => setReq({ ...req, seats: +e.target.value })}>
+                        <select className="input slim" name="seats" value={req.seats} onChange={(e) => setReq({ ...req, seats: +e.target.value })}>
                           {Array.from({ length: Math.min(4, free) }, (_, i) => (
                             <option key={i + 1} value={i + 1}>{i + 1} seat{i ? 's' : ''}</option>
                           ))}
@@ -280,6 +280,7 @@ export default function FindRide() {
                       </div>
                       <textarea
                         className="input"
+                        name="message"
                         rows={2}
                         placeholder='Message (optional) — e.g. "Hi! Heading the same way, happy to share fuel cost."'
                         value={req.message}
@@ -295,7 +296,6 @@ export default function FindRide() {
               )
             })}
         </div>
-      </div>
     </div>
   )
 }

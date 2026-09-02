@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { Car, Footprints, Handshake, MapPin, MessageCircle, Repeat, Wallet, Star, Navigation } from 'lucide-react'
+import OSMMap from '../components/OSMMap.jsx'
 
 const steps = [
   {
@@ -65,22 +66,10 @@ export default function Landing() {
                 </div>
               </div>
               <div className="mock-map">
-                <svg viewBox="0 0 200 190" preserveAspectRatio="xMidYMid slice" style={{ width: '100%', height: '100%' }}>
-                  <rect width="200" height="190" fill="#0e1528" />
-                  {[30, 70, 110, 150].map((x) => <rect key={x} x={x} y={0} width={2} height={190} fill="#ffffff0d" />)}
-                  {[30, 70, 110, 150].map((y) => <rect key={y} x={0} y={y} width={200} height={2} fill="#ffffff0d" />)}
-                  <ellipse cx={160} cy={40} rx={35} ry={26} fill="#0a1f35" opacity={0.9} />
-                  <ellipse cx={40} cy={150} rx={30} ry={20} fill="#0a1f35" opacity={0.9} />
-                  <circle cx={90} cy={90} r={22} fill="#14231d" opacity={0.8} />
-                  <line x1={20} y1={0} x2={20} y2={190} stroke="#263156" strokeWidth={4} />
-                  <line x1={140} y1={0} x2={140} y2={190} stroke="#263156" strokeWidth={4} />
-                  <line x1={0} y1={120} x2={200} y2={120} stroke="#2b3a6b" strokeWidth={6} />
-                  <line x1={0} y1={60} x2={200} y2={60} stroke="#2b3a6b" strokeWidth={6} />
-                  {/* route */}
-                  <path d="M 40 150 L 120 90" fill="none" stroke="#818cf8" strokeWidth={2.5} strokeDasharray="5 6" />
-                  <circle cx={40} cy={150} r={7} fill="#ef4444" stroke="#0e1528" strokeWidth={2} />
-                  <circle cx={120} cy={90} r={7} fill="#22c55e" stroke="#0e1528" strokeWidth={2} />
-                </svg>
+                <OSMMap className="landing-map" interactive={false} points={[
+                  { pos: [12.9716, 77.5946], color: '#22c55e' },
+                  { pos: [12.9216, 77.6116], color: '#ef4444' },
+                ]} />
                 <div className="mock-map-float">
                   <Car size={13} /> 4 rides found
                 </div>

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Briefcase, Car, MessageSquare, Phone, CalendarDays, Ticket, Bell, CheckCircle2, XCircle } from 'lucide-react'
 import { api } from '../api.js'
-import MapView from '../components/MapView.jsx'
+import OSMMap from '../components/OSMMap.jsx'
 import { vehicleEmoji, vehicleLabel, fmtDT, timeUntil, priceLabel, initials, statusClass } from '../utils.js'
 import { useToast } from '../Toast.jsx'
 
@@ -64,7 +64,7 @@ export default function MyRides() {
 
   const pendingCount = offered.reduce((n, r) => n + r.requests.filter((q) => q.status === 'pending').length, 0)
 
-  const allMapPoints = current.flatMap((r) => [
+  const mapPoints = current.flatMap((r) => [
     { pos: [r.from_lat, r.from_lng], popup: `▶ ${r.from_name}`, color: '#22c55e' },
     { pos: [r.to_lat, r.to_lng], popup: `🏁 ${r.to_name}`, color: '#ef4444' },
   ])
@@ -96,8 +96,10 @@ export default function MyRides() {
         </button>
       </div>
 
-      <div className="split">
-        <div className="stack-lg">
+      <div className="stack-lg">
+          {mapPoints.length > 0 && (
+            <OSMMap className="tall-sm" points={mapPoints} />
+          )}
           {tab === 'offered' && (
             <>
               {offered.length === 0 && (
@@ -205,14 +207,6 @@ export default function MyRides() {
             </>
           )}
         </div>
-
-        {allMapPoints.length > 0 && (
-          <aside className="map-side">
-            <MapView className="tall" zoom={5} points={allMapPoints} />
-            <p className="hint center">🟢 trip starts · 🔴 trip ends</p>
-          </aside>
-        )}
-      </div>
     </div>
   )
 }
