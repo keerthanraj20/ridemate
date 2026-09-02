@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Compass, MapPin, Search, SearchX, Sliders } from 'lucide-react'
+import { Compass, MapPin, Search, SearchX, Sliders, CheckCircle2, Users, Clock, Calendar } from 'lucide-react'
 import { api } from '../api.js'
 import LocationPicker from '../components/LocationPicker.jsx'
 import OSMMap from '../components/OSMMap.jsx'
@@ -234,64 +234,102 @@ export default function FindRide() {
               const free = r.seats_total - r.seats_taken
               return (
                 <div key={r.id} className="card ride-card hover-lift" style={{ animationDelay: `${Math.min(i, 6) * 60}ms` }}>
-                  <div className="ride-top">
-                    <span className="veh" title={vehicleLabel(r.vehicle_type)}>{vehicleEmoji(r.vehicle_type)}</span>
-                    <div className="ride-route">
-                      <strong>{r.from_name} <span className="arrow">→</span> {r.to_name}</strong>
-                      <span className="sub">{fmtDT(r.depart_at)} · {vehicleLabel(r.vehicle_type)}{r.vehicle_model ? ` (${r.vehicle_model})` : ''}</span>
+                  {/* Header: avatar + name + badges + price */}
+                  <div className="rc-header">
+                    <div className="rc-avatar" style={{ background: `hsl(${(r.owner_name || '').charCodeAt(0) * 7 % 360}, 55%, 48%)` }}>
+                      {initials(r.owner_name)}
                     </div>
-                    <div className="ride-side">
-                      <span className="chip soon">⏱ {timeUntil(r.depart_at)}</span>
-                      <span className="chip price">{priceLabel(r.price)}</span>
+                    <div className="rc-header-info">
+                      <div className="rc-name-row">
+                        <span className="rc-name">{r.owner_name}</span>
+                        {r.owner_verified && (
+                          <span className="rc-verified"><CheckCircle2 size={11} /> Verified</span>
+                        )}
+                      </div>
+                      <div className="rc-rating-row">
+                        {r.owner_rating ? (
+                          <span className="rc-rating" title={`${r.owner_ratings_count} rating(s)`}>⭐ {r.owner_rating}</span>
+                        ) : null}
+                        {r.owner_ratings_count != null && (
+                          <span className="rc-trips">{r.owner_ratings_count} rides</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="rc-price">
+                      <span className="rc-price-val">{priceLabel(r.price)}</span>
+                      <span className="rc-price-sub">per seat</span>
                     </div>
                   </div>
 
-                  <div className="ride-meta">
-                    <span className="avatar sm">{initials(r.owner_name)}</span>
-                    <span>{r.owner_name}</span>
-                    {r.owner_rating ? (
-                      <span className="chip rating" title={`${r.owner_ratings_count} rating(s)`}>⭐ {r.owner_rating}</span>
-                    ) : null}
-                    <span className={`chip ${free <= 1 ? 'warn' : 'ok'}`}>{free} seat{free === 1 ? '' : 's'} left</span>
+                  {/* Route: vertical dots + from/to */}
+                  <div className="rc-route">
+                    <div className="rc-route-line">
+                      <div className="rc-dot rc-dot-start" />
+                      <div className="rc-dot-line" />
+                      <MapPin size={12} className="rc-dot-end" />
+                    </div>
+                    <div className="rc-route-labels">
+                      <div>
+                        <div className="rc-route-from">{r.from_name}</div>
+                      </div>
+                      <div>
+                        <div className="rc-route-to">{r.to_name}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Chips: time-unil + date/time */}
+                  <div className="rc-chips">
+                    <span className="chip soon"><Clock size={11} /> {timeUntil(r.depart_at)}</span>
+                    <span className="rc-date-time"><Calendar size={11} /> {fmtDT(r.depart_at)}</span>
                     {r.repeat_every && r.repeat_every !== 'none' && (
                       <span className="chip repeat">{repeatLabel(r.repeat_every)}</span>
                     )}
-                    {(r.dist_start != null || r.dist_end != null) && (
-                      <span className="dist">· starts {r.dist_start} km away, drops you {r.dist_end} km from destination</span>
-                    )}
+                  </div>
+
+                  {/* Bottom: vehicle + seats + CTA */}
+                  <div className="rc-bottom">
+                    <div className="rc-vehicle">
+                      <span className="veh" title={vehicleLabel(r.vehicle_type)}>{vehicleEmoji(r.vehicle_type)}</span>
+                      <div>
+                        <div className="rc-vehicle-model">{vehicleLabel(r.vehicle_type)}{r.vehicle_model ? ` · ${r.vehicle_model}` : ''}</div>
+                      </div>
+                    </div>
+                    <div className="rc-bottom-right">
+                      <span className="rc-seats"><Users size={12} /> {free} left</span>
+                      {r.my_status ? (
+                        <span className={`chip ${statusClass(r.my_status)}`}>
+                          {r.my_status === 'accepted' ? '✅ Accepted' : '⏳ Sent'}
+                        </span>
+                      ) : openForm === r.id ? (
+                        <div className="req-form stack fade-in">
+                          <div className="row">
+                            <select className="input slim" name="seats" value={req.seats} onChange={(e) => setReq({ ...req, seats: +e.target.value })}>
+                              {Array.from({ length: Math.min(4, free) }, (_, i) => (
+                                <option key={i + 1} value={i + 1}>{i + 1} seat{i ? 's' : ''}</option>
+                              ))}
+                            </select>
+                            <button className="btn primary sm" onClick={() => sendRequest(r.id)}>Send request</button>
+                            <button className="btn ghost sm" onClick={() => setOpenForm(null)}>Cancel</button>
+                          </div>
+                          <textarea
+                            className="input"
+                            name="message"
+                            rows={2}
+                            placeholder='Message (optional)'
+                            value={req.message}
+                            onChange={(e) => setReq({ ...req, message: e.target.value })}
+                          />
+                        </div>
+                      ) : (
+                        <button className="btn cta" onClick={() => { setOpenForm(r.id); setReq({ seats: 1, message: '' }) }}>
+                          Request Seat
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {r.notes && <p className="notes">"{r.notes}"</p>}
-
-                  {r.my_status ? (
-                    <span className={`chip ${statusClass(r.my_status)}`}>
-                      {r.my_status === 'accepted' ? '✅ Accepted — see My Rides for contact' : '⏳ Request sent'}
-                    </span>
-                  ) : openForm === r.id ? (
-                    <div className="req-form stack fade-in">
-                      <div className="row">
-                        <select className="input slim" name="seats" value={req.seats} onChange={(e) => setReq({ ...req, seats: +e.target.value })}>
-                          {Array.from({ length: Math.min(4, free) }, (_, i) => (
-                            <option key={i + 1} value={i + 1}>{i + 1} seat{i ? 's' : ''}</option>
-                          ))}
-                        </select>
-                        <button className="btn primary" onClick={() => sendRequest(r.id)}>Send request</button>
-                        <button className="btn ghost" onClick={() => setOpenForm(null)}>Cancel</button>
-                      </div>
-                      <textarea
-                        className="input"
-                        name="message"
-                        rows={2}
-                        placeholder='Message (optional) — e.g. "Hi! Heading the same way, happy to share fuel cost."'
-                        value={req.message}
-                        onChange={(e) => setReq({ ...req, message: e.target.value })}
-                      />
-                    </div>
-                  ) : (
-                    <button className="btn primary" onClick={() => { setOpenForm(r.id); setReq({ seats: 1, message: '' }) }}>
-                      Request seat →
-                    </button>
-                  )}
                 </div>
               )
             })}
