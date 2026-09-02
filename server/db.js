@@ -9,13 +9,25 @@ db.exec(`
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  name          TEXT NOT NULL,
-  email         TEXT NOT NULL UNIQUE,
-  phone         TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
-  bio           TEXT DEFAULT '',
-  created_at    TEXT DEFAULT (datetime('now'))
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  name              TEXT NOT NULL,
+  email             TEXT NOT NULL UNIQUE,
+  phone             TEXT NOT NULL,
+  password_hash     TEXT NOT NULL,
+  bio               TEXT DEFAULT '',
+  avatar            TEXT DEFAULT NULL,
+  email_verified    INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT DEFAULT (datetime('now'))
+);
+
+-- password reset tokens
+CREATE TABLE IF NOT EXISTS reset_tokens (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id),
+  token      TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS rides (
@@ -35,6 +47,8 @@ CREATE TABLE IF NOT EXISTS rides (
   notes         TEXT,
   status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','full','cancelled','completed')),
   repeat_every  TEXT CHECK (repeat_every IN ('none','daily','weekly','weekdays')) DEFAULT 'none',
+  repeat_parent_id INTEGER DEFAULT NULL REFERENCES rides(id),
+  repeat_child_on  TEXT DEFAULT NULL,
   created_at    TEXT DEFAULT (datetime('now'))
 );
 
@@ -122,8 +136,15 @@ function ensureColumn(table, column, ddl) {
   }
 }
 ensureColumn('users', 'bio', "TEXT DEFAULT ''")
+ensureColumn('users', 'avatar', "TEXT DEFAULT NULL")
+ensureColumn('users', 'email_verified', 'INTEGER NOT NULL DEFAULT 0')
 ensureColumn('rides', 'repeat_every', "TEXT DEFAULT 'none'")
+ensureColumn('rides', 'repeat_parent_id', 'INTEGER DEFAULT NULL')
+ensureColumn('rides', 'repeat_child_on', "TEXT DEFAULT NULL")
 ensureColumn('messages', 'read', 'INTEGER NOT NULL DEFAULT 0')
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_reset_user ON reset_tokens(user_id)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_rides_repeat ON rides(repeat_parent_id)`)
 
 // index on the newly-migrated messages.read column (depends on migration above)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_msg_recip ON messages(recipient_id, read)`)

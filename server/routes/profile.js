@@ -56,4 +56,20 @@ router.put('/profile', auth, (req, res) => {
   res.json({ user: publicUser(user) })
 })
 
+// ---- Upload / update profile avatar (base64 data-URI or raw base64) ----
+router.put('/profile/avatar', auth, (req, res) => {
+  const { avatar } = req.body || {}
+  if (!avatar) return res.status(400).json({ error: 'No image provided' })
+
+  const trimmed = String(avatar).trim()
+  if (!trimmed.startsWith('data:image/')) return res.status(400).json({ error: 'Invalid image format' })
+
+  // Enforce ~1 MB max (base64 string length)
+  if (trimmed.length > 1_400_000) return res.status(400).json({ error: 'Image must be under 1 MB' })
+
+  db.prepare('UPDATE users SET avatar=? WHERE id=?').run(trimmed, req.user.id)
+  const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id)
+  res.json({ user: publicUser(user) })
+})
+
 export default router

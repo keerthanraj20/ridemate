@@ -94,6 +94,29 @@ export default function Profile() {
 
   const { stats, recentRatings } = data
 
+  function handleAvatar(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 1_000_000) return toast('Image must be under 1 MB', 'bad')
+    const reader = new FileReader()
+    reader.onload = async () => {
+      try {
+        const res = await api('/profile/avatar', { method: 'PUT', body: { avatar: reader.result } })
+        updateUser(res.user)
+        setData((d) => ({ ...d, user: res.user }))
+        toast('Avatar updated!')
+      } catch (err) { toast(err.message, 'bad') }
+    }
+    reader.readAsDataURL(file)
+  }
+
+  async function sendVerify() {
+    try {
+      await api('/auth/verify-email', { method: 'POST' })
+      toast('Verification email sent — check your inbox')
+    } catch (err) { toast(err.message, 'bad') }
+  }
+
   return (
     <div className="page fade-in">
       <div className="page-head">
@@ -104,13 +127,30 @@ export default function Profile() {
         <div className="stack-lg">
           <div className="card profile-card">
             <div className="profile-top">
-              <span className="avatar lg">{initials(data.user.name)}</span>
+              {data.user.avatar ? (
+                <label className="avatar lg" style={{ cursor: 'pointer', padding: 0, overflow: 'hidden', background: 'none' }}>
+                  <img src={data.user.avatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                  <input type="file" accept="image/*" hidden onChange={handleAvatar} />
+                </label>
+              ) : (
+                <label className="avatar lg" style={{ cursor: 'pointer', padding: 0 }}>
+                  {initials(data.user.name)}
+                  <input type="file" accept="image/*" hidden onChange={handleAvatar} />
+                </label>
+              )}
               <div>
                 <h3 style={{ margin: 0 }}>{data.user.name}</h3>
                 <span className="hint">{data.user.email}</span>
                 <div style={{ marginTop: 6 }}>
                   <TrustPill verification={data.verification} />
                 </div>
+                {!data.user.email_verified ? (
+                  <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={sendVerify}>
+                    📧 Send verification email
+                  </button>
+                ) : (
+                  <span className="chip trust trust-ok" style={{ marginTop: 8 }}>✅ Email verified</span>
+                )}
               </div>
             </div>
 

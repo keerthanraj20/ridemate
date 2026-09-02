@@ -75,6 +75,12 @@ export default function Auth() {
           <button className="btn primary lg" disabled={busy}>
             {busy ? 'Please wait…' : mode === 'login' ? 'Login' : 'Create account'}
           </button>
+
+          {mode === 'login' && (
+            <p className="hint" style={{ textAlign: 'center', marginTop: 8 }}>
+              <a href="/forgot-password" className="link" style={{ color: 'var(--accent)' }}>Forgot your password?</a>
+            </p>
+          )}
         </form>
       </div>
     </div>

@@ -27,5 +27,13 @@ export function distanceKm(lat1, lng1, lat2, lng2) {
 }
 
 export function publicUser(u) {
-  return { id: u.id, name: u.name, email: u.email, phone: u.phone, bio: u.bio || '' }
+  return {
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    phone: u.phone,
+    bio: u.bio || '',
+    avatar: u.avatar || null,
+    email_verified: u.email_verified ? 1 : 0,
+  }
 }

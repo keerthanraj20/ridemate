@@ -5,6 +5,8 @@ import Header from './components/Header.jsx'
 
 const Landing = lazy(() => import('./pages/Landing.jsx'))
 const Auth = lazy(() => import('./pages/Auth.jsx'))
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword.jsx'))
+const VerifyEmail = lazy(() => import('./pages/VerifyEmail.jsx'))
 const FindRide = lazy(() => import('./pages/FindRide.jsx'))
 const OfferRide = lazy(() => import('./pages/OfferRide.jsx'))
 const MyRides = lazy(() => import('./pages/MyRides.jsx'))
@@ -53,6 +55,9 @@ export default function App() {
                 </GuestOnly>
               }
             />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ForgotPassword />} />
+            <Route path="/verify-email" element={<VerifyEmail />} />
             <Route
               path="/find"
               element={
