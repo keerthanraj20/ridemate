@@ -6,13 +6,13 @@ services:
     startCommand: npm start
     envVars:
       - key: JWT_SECRET
-        generateValue: true
+        value: rm-prod-2026-krs-9f3a7b2c1d4e5f6a8b0c
       - key: NODE_ENV
         value: production
       - key: CLIENT_URL
-        sync: false
+        value: https://ridemate.onrender.com
       - key: CORS_ORIGINS
-        sync: false
+        value: https://ridemate.onrender.com
     disk:
       mountPath: /data
       sizeGB: 1
