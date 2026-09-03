@@ -2,13 +2,17 @@ services:
   - type: web
     name: ridemate
     runtime: node
+    plan: free
     buildCommand: npm run setup && npm run build
     startCommand: npm start
+    healthCheckPath: /api/health
     envVars:
       - key: JWT_SECRET
-        sync: false
+        generateValue: true
       - key: NODE_ENV
         value: production
+      - key: PORT
+        value: 4000
       - key: CLIENT_URL
         value: https://ridemate-w9wj.onrender.com
       - key: CORS_ORIGINS
