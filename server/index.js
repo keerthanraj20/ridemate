@@ -115,27 +115,35 @@ app.use('/api', generalLimiter, notificationRoutes)
 app.use('/api/phone/send-code', otpLimiter)
 app.use('/api', generalLimiter, safetyRoutes)
 
+// 404 + error handler (for API routes)
+app.use((req, res, next) => {
+  // If the request is for an API route, return 404 JSON
+  if (req.path.startsWith('/api')) return res.status(404).json({ error: 'Not found' })
+  next()
+})
+
 // Serve the React build in production
 const clientDist = path.join(__dirname, '..', 'client', 'dist')
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist))
+  // SPA fallback: serve index.html for any non-API, non-static route
   app.get('/{*splat}', (req, res) => {
     res.sendFile(path.join(clientDist, 'index.html'))
   })
-} else {
-  // 404 + error handler (dev mode)
-  app.use((req, res) => res.status(404).json({ error: 'Not found' }))
 }
+
 app.use((err, req, res, next) => {
   console.error(err)
   res.status(500).json({ error: 'Something went wrong on our side' })
 })
 
 // Only listen when run directly (not when imported by tests)
-const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+// In production (Render etc.) always listen. In dev, check argv.
+const isDirectRun = process.env.NODE_ENV === 'production' ||
+  (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
 if (isDirectRun) {
   const PORT = process.env.PORT || 4000
-  app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚗 RideMate API running at http://localhost:${PORT}`)
     startRecurringScheduler()
   })
