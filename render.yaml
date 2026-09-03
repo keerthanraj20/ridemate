@@ -2,17 +2,20 @@ services:
   - type: web
     name: ridemate
     runtime: node
+    plan: standard
     buildCommand: npm run setup && npm run build
     startCommand: npm start
     envVars:
       - key: JWT_SECRET
-        value: rm-prod-2026-krs-9f3a7b2c1d4e5f6a8b0c
+        sync: false
       - key: NODE_ENV
         value: production
       - key: CLIENT_URL
-        value: https://ridemate.onrender.com
+        value: https://ridemate-w9wj.onrender.com
       - key: CORS_ORIGINS
-        value: https://ridemate.onrender.com
+        value: https://ridemate-w9wj.onrender.com
+      - key: RM_DB_PATH
+        value: /data/ridemate.db
     disk:
       mountPath: /data
       sizeGB: 1
