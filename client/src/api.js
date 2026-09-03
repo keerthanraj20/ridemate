@@ -20,7 +20,7 @@ export async function api(path, { method = 'GET', body, signal } = {}) {
   if (res.status === 401) {
     localStorage.removeItem('rm_token')
     localStorage.removeItem('rm_user')
-    window.location.href = '/auth'
+    window.location.reload()
     throw new Error(data.error || 'Session expired')
   }
 
