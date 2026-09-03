@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: ridemate
+    runtime: node
+    buildCommand: npm install && npm install --prefix server && npm install --prefix client && npm run build
+    startCommand: node server/index.js
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+      - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+    disk:
+      mountPath: /data
+      sizeGB: 1

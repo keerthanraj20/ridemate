@@ -7,4 +7,8 @@ export default defineConfig({
     proxy: { '/api': 'http://localhost:4000' },
     warmup: { clientFiles: ['./src/pages/*.jsx', './src/components/*.jsx', './src/*.jsx'] },
   },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
+  },
 })

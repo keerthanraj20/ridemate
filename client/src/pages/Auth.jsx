@@ -17,6 +17,26 @@ export default function Auth() {
   async function submit(e) {
     e.preventDefault()
     setError('')
+
+    if (!form.email || !/^\S+@\S+\.\S+$/.test(form.email)) {
+      setError('Enter a valid email address')
+      return
+    }
+    if (!form.password || form.password.length < 6) {
+      setError('Password must be at least 6 characters')
+      return
+    }
+    if (mode === 'register') {
+      if (!form.name || form.name.trim().length < 2) {
+        setError('Enter your full name')
+        return
+      }
+      if (!form.phone || form.phone.trim().length < 6) {
+        setError('Enter a valid phone number')
+        return
+      }
+    }
+
     setBusy(true)
     try {
       const res = await fetch(`/api/auth/${mode}`, {

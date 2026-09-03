@@ -45,6 +45,7 @@ export default function FindRide() {
   const [reportFor, setReportFor] = useState(null) // ride id we're reporting
   const [reportReason, setReportReason] = useState('')
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
   const [openForm, setOpenForm] = useState(null)
   const [req, setReq] = useState({ seats: 1, message: '' })
   const [pickMode, setPickMode] = useState(null)
@@ -55,6 +56,7 @@ export default function FindRide() {
     const ctrl = new AbortController()
     abortRef.current = ctrl
     setLoading(true)
+    setError(null)
     try {
       const qs = new URLSearchParams(Object.entries({ ...filters(), ...params }).filter(([, v]) => v !== '' && v != null)).toString()
       const data = await api(`/rides/search${qs ? `?${qs}` : ''}`, { signal: ctrl.signal })
@@ -62,7 +64,11 @@ export default function FindRide() {
       setHasMore(!!data.hasMore)
       setPage(data.page || 1)
     } catch (err) {
-      if (err.name !== 'AbortError') toast(err.message, 'bad')
+      if (err.name !== 'AbortError') {
+        setError(err.message)
+        setResults([])
+        toast(err.message, 'bad')
+      }
       return
     } finally {
       if (!ctrl.signal.aborted) setLoading(false)
@@ -259,7 +265,16 @@ export default function FindRide() {
             </>
           )}
 
-          {results && results.length === 0 && !loading && (
+          {!loading && error && results != null && results.length === 0 && (
+            <div className="card empty">
+              <div className="empty-emoji"><SearchX size={40} /></div>
+              <p><b>Could not load trips.</b></p>
+              <p className="hint">{error}</p>
+              <button className="btn primary" onClick={() => run({})}>Retry</button>
+            </div>
+          )}
+
+          {results && results.length === 0 && !loading && !error && (
             <div className="card empty">
               <div className="empty-emoji"><SearchX size={40} /></div>
               <p><b>No trips match right now.</b></p>

@@ -16,6 +16,14 @@ export async function api(path, { method = 'GET', body, signal } = {}) {
   } catch {
     /* no body */
   }
+
+  if (res.status === 401) {
+    localStorage.removeItem('rm_token')
+    localStorage.removeItem('rm_user')
+    window.location.href = '/auth'
+    throw new Error(data.error || 'Session expired')
+  }
+
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
   return data
 }

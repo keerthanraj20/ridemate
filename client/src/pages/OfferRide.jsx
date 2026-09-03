@@ -37,11 +37,42 @@ export default function OfferRide() {
   }))
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState(null)
+  const [formError, setFormError] = useState('')
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
 
   async function submit(e) {
     e.preventDefault()
+    setFormError('')
+
+    if (!form.from.name || !Number.isFinite(form.from.lat) || !Number.isFinite(form.from.lng)) {
+      setFormError('Pick or search your starting location on the map')
+      return
+    }
+    if (!form.to.name || !Number.isFinite(form.to.lat) || !Number.isFinite(form.to.lng)) {
+      setFormError('Pick or search your destination on the map')
+      return
+    }
+    if (!form.depart_at) {
+      setFormError('Pick a departure date & time')
+      return
+    }
+    const depart = new Date(form.depart_at)
+    if (Number.isNaN(depart.getTime()) || depart.getTime() < Date.now() - 60000) {
+      setFormError('Departure time must be in the future')
+      return
+    }
+    const seats = Math.floor(Number(form.seats_total))
+    if (!Number.isInteger(seats) || seats < 1 || seats > 8) {
+      setFormError('Seats must be between 1 and 8')
+      return
+    }
+    const price = Number(form.price)
+    if (!Number.isFinite(price) || price < 0) {
+      setFormError('Price must be 0 or more')
+      return
+    }
+
     setBusy(true)
     try {
       const data = await api('/rides', {
@@ -166,6 +197,8 @@ export default function OfferRide() {
             <input className="input" placeholder="e.g. Leaving after breakfast" value={form.notes} onChange={set('notes')} maxLength={300} />
           </label>
         </div>
+
+        {formError && <p className="banner bad-text">{formError}</p>}
 
         <button className="btn primary lg" disabled={busy}>
           {busy ? 'Publishing…' : (<><Rocket size={16} /> Publish my trip</>)}
