@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { db } from '../db.js'
+import { all, get, run } from '../db.js'
 import { auth } from './auth.js'
 import { notify } from '../notify.js'
 import { addCredit } from '../util.js'
@@ -11,14 +11,14 @@ import {
 const router = Router()
 
 // ---------- my escrow holds ----------
-router.get('/payments', auth, (req, res) => {
+router.get('/payments', auth, async (req, res) => {
   // lazy housekeeping: complete rides auto-release old holds
-  const completed = db
-    .prepare("SELECT DISTINCT ride_id FROM escrow_payments WHERE ride_id IN (SELECT id FROM rides WHERE status='completed')")
-    .all()
-  for (const row of completed) autoReleaseForRide(row.ride_id)
+  const completed = await all(
+    "SELECT DISTINCT ride_id FROM escrow_payments WHERE ride_id IN (SELECT id FROM rides WHERE status='completed')"
+  )
+  for (const row of completed) await autoReleaseForRide(row.ride_id)
 
-  const rows = listEscrowsForUser(req.user.id)
+  const rows = await listEscrowsForUser(req.user.id)
   const payments = rows.map((e) => {
     const isPayer = e.payer_id === req.user.id
     const isPayee = e.payee_id === req.user.id
@@ -70,12 +70,12 @@ router.post('/payments/order', auth, async (req, res) => {
   const requestId = Number(req.body?.request_id)
   if (!Number.isInteger(requestId)) return res.status(400).json({ error: 'Select a booking to pay for' })
 
-  const request = db.prepare('SELECT * FROM requests WHERE id=?').get(requestId)
+  const request = await get('SELECT * FROM requests WHERE id=?', [requestId])
   if (!request) return res.status(404).json({ error: 'Booking not found' })
   if (request.rider_id !== req.user.id) return res.status(403).json({ error: 'Not your booking' })
   if (request.status !== 'accepted') return res.status(400).json({ error: 'Only accepted bookings can be paid' })
 
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(request.ride_id)
+  const ride = await get('SELECT * FROM rides WHERE id=?', [request.ride_id])
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
   if (ride.status === 'cancelled' || ride.status === 'completed')
     return res.status(400).json({ error: 'This ride is no longer active' })
@@ -95,7 +95,7 @@ router.post('/payments/order', auth, async (req, res) => {
     })
 
     if (!existing) {
-      notify(ride.user_id, {
+      await notify(ride.user_id, {
         type: 'payment',
         title: 'Fare held in escrow 🛡️',
         body: `${req.user.name} paid ₹${(amountPaise / 100).toFixed(2)} for the ${ride.from_name} → ${ride.to_name} trip. Funds reach you after the trip.`,
@@ -103,18 +103,18 @@ router.post('/payments/order', auth, async (req, res) => {
       })
     }
 
+    const escrowRow = await get(
+      `SELECT e.*, uf.name AS payer_name, uo.name AS payee_name
+       FROM escrow_payments e
+       JOIN users uf ON uf.id=e.payer_id
+       JOIN users uo ON uo.id=e.payee_id
+       WHERE e.id=?`,
+      [escrow.id]
+    )
+
     res.status(existing ? 200 : 201).json({
       message: existing ? 'Booking already paid' : 'Fare held in escrow until the trip is completed',
-      payment: escrowPublic(
-        db.prepare(
-          `SELECT e.*, uf.name AS payer_name, uo.name AS payee_name
-           FROM escrow_payments e
-           JOIN users uf ON uf.id=e.payer_id
-           JOIN users uo ON uo.id=e.payee_id
-           WHERE e.id=?`
-        ).get(escrow.id),
-        req.user.id
-      ),
+      payment: escrowPublic(escrowRow, req.user.id),
       // When using Razorpay, give the client what it needs to open the
       // Checkout modal for this order.
       razorpay: PROVIDER === 'razorpay'
@@ -128,15 +128,15 @@ router.post('/payments/order', auth, async (req, res) => {
 
 // ---------- rider refund (before capture / after cancel) ----------
 router.post('/payments/:id/refund', auth, async (req, res) => {
-  const escrow = db.prepare('SELECT * FROM escrow_payments WHERE id=?').get(Number(req.params.id))
+  const escrow = await get('SELECT * FROM escrow_payments WHERE id=?', [Number(req.params.id)])
   if (!escrow) return res.status(404).json({ error: 'Payment not found' })
   if (escrow.payer_id !== req.user.id) return res.status(403).json({ error: 'Only the payer can refund' })
 
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(escrow.ride_id)
+  const ride = await get('SELECT * FROM rides WHERE id=?', [escrow.ride_id])
   if (ride?.status === 'completed') return res.status(400).json({ error: 'Ride completed — funds are being released' })
   if (escrow.status === 'created') {
     // never captured: cancel the order outright
-    db.prepare("UPDATE escrow_payments SET status='cancelled' WHERE id=?").run(escrow.id)
+    await run("UPDATE escrow_payments SET status='cancelled' WHERE id=?", [escrow.id])
     return res.json({ ok: true, message: 'Payment order cancelled' })
   }
 
@@ -148,7 +148,7 @@ router.post('/payments/:id/refund', auth, async (req, res) => {
   }
   if (updated.status !== 'refunded') return res.status(400).json({ error: 'Payment is not refundable' })
 
-  notify(escrow.payee_id, {
+  await notify(escrow.payee_id, {
     type: 'payment',
     title: 'Escrow refunded',
     body: `${req.user.name} got their ₹${(updated.amount_paise / 100).toFixed(2)} refunded.`,
@@ -159,15 +159,15 @@ router.post('/payments/:id/refund', auth, async (req, res) => {
 })
 
 // ---------- owner release (payday after the trip) ----------
-router.post('/payments/:id/release', auth, (req, res) => {
-  const escrow = db.prepare('SELECT * FROM escrow_payments WHERE id=?').get(Number(req.params.id))
+router.post('/payments/:id/release', auth, async (req, res) => {
+  const escrow = await get('SELECT * FROM escrow_payments WHERE id=?', [Number(req.params.id)])
   if (!escrow) return res.status(404).json({ error: 'Payment not found' })
   if (escrow.payee_id !== req.user.id) return res.status(403).json({ error: 'Only the ride owner can release' })
 
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(escrow.ride_id)
+  const ride = await get('SELECT * FROM rides WHERE id=?', [escrow.ride_id])
   if (ride?.status !== 'completed') return res.status(400).json({ error: 'Funds release once the ride is marked completed' })
 
-  const updated = releaseEscrow(escrow.id)
+  const updated = await releaseEscrow(escrow.id)
   if (updated.status !== 'released') return res.status(400).json({ error: 'Payment is not releasable' })
 
   // Credit the owner's platform wallet so they can withdraw. For the mock
@@ -175,7 +175,7 @@ router.post('/payments/:id/release', auth, (req, res) => {
   // account holds the captured funds and this credit is what the owner
   // can settle. (Actual bank/UPI payout is a separate Razorpay Payout.)
   const amount = updated.amount_paise / 100
-  addCredit(req.user.id, amount, `Ride payout #${escrow.id} (${ride.from_name} → ${ride.to_name})`)
+  await addCredit(req.user.id, amount, `Ride payout #${escrow.id} (${ride.from_name} → ${ride.to_name})`)
 
   res.json({ ok: true, message: `₹${amount.toFixed(2)} credited to your wallet balance` })
 })
@@ -190,14 +190,14 @@ router.post('/payments/order/verify', auth, async (req, res) => {
   if (!orderId || !paymentId) return res.status(400).json({ error: 'order_id and payment_id required' })
 
   // Verify the caller owns this order (they created it as the payer)
-  const escrow = db.prepare('SELECT * FROM escrow_payments WHERE provider_order_id=?').get(orderId)
+  const escrow = await get('SELECT * FROM escrow_payments WHERE provider_order_id=?', [orderId])
   if (!escrow) return res.status(404).json({ error: 'Order not found' })
   if (escrow.payer_id !== req.user.id) return res.status(403).json({ error: 'Not your payment order' })
 
   const ok = await verifyGatewayPayment(orderId, paymentId)
   if (!ok) return res.status(400).json({ error: 'Payment could not be confirmed' })
 
-  notify(escrow.payee_id, {
+  await notify(escrow.payee_id, {
     type: 'payment',
     title: 'Fare held in escrow 🛡️',
     body: `A rider paid ₹${(escrow.amount_paise / 100).toFixed(2)} — funds reach you after the trip.`,
@@ -231,9 +231,9 @@ export async function paymentWebhook(req, res) {
   }
 
   if (json.event === 'payment.captured' && result) {
-    const escrow = captureEscrowByOrderId(result.orderId, result.paymentId)
+    const escrow = await captureEscrowByOrderId(result.orderId, result.paymentId)
     if (escrow && escrow.status === 'captured') {
-      notify(escrow.payee_id, {
+      await notify(escrow.payee_id, {
         type: 'payment',
         title: 'Fare held in escrow 🛡️',
         body: `A rider paid ₹${(escrow.amount_paise / 100).toFixed(2)} — funds reach you after the trip.`,

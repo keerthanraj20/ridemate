@@ -56,7 +56,7 @@ describe('recurring ride generator', () => {
   })
   after(() => db.close())
 
-  it('generates a daily instance for tomorrow with the same time-of-day', () => {
+  it('generates a daily instance for tomorrow with the same time-of-day', async () => {
     truncateAll(db)
     freshUser()
     // a departure at a fixed local wall-clock time, chosen in the past so the
@@ -65,7 +65,7 @@ describe('recurring ride generator', () => {
     dep.setUTCHours(9, 30, 0, 0)
     const id = insertTemplate({ departAt: dep, repeatEvery: 'daily' })
 
-    generateRecurringRides()
+    await generateRecurringRides()
     const kids = childrenOf(id)
     assert.equal(kids.length, 1)
     assert.equal(kids[0].repeat_child_on, tomorrowUtcStr())
@@ -75,7 +75,7 @@ describe('recurring ride generator', () => {
     assert.equal(kidDep.getUTCMinutes(), 30)
   })
 
-  it('weekly repeats on the departure weekday of the template, not creation day', () => {
+  it('weekly repeats on the departure weekday of the template, not creation day', async () => {
     truncateAll(db)
     freshUser()
     // Pick a departure whose weekday equals tomorrow => should generate.
@@ -95,7 +95,7 @@ describe('recurring ride generator', () => {
     const matchId = insertTemplate({ departAt: depMatch, repeatEvery: 'weekly' })
     const otherId = insertTemplate({ departAt: depOther, repeatEvery: 'weekly' })
 
-    generateRecurringRides()
+    await generateRecurringRides()
 
     const matchKids = childrenOf(matchId)
     const otherKids = childrenOf(otherId)
@@ -105,7 +105,7 @@ describe('recurring ride generator', () => {
     assert.equal(otherKids.length, 0)
   })
 
-  it('weekdays does not generate on Saturday or Sunday', () => {
+  it('weekdays does not generate on Saturday or Sunday', async () => {
     truncateAll(db)
     freshUser()
     // Only meaningful if tomorrow is a weekend; otherwise skip.
@@ -116,22 +116,22 @@ describe('recurring ride generator', () => {
     dep.setUTCHours(8, 0, 0, 0)
     const id = insertTemplate({ departAt: dep, repeatEvery: 'weekdays' })
 
-    generateRecurringRides()
+    await generateRecurringRides()
     assert.equal(childrenOf(id).length, 0)
   })
 
-  it('does not duplicate an instance already generated for tomorrow', () => {
+  it('does not duplicate an instance already generated for tomorrow', async () => {
     truncateAll(db)
     freshUser()
     const dep = new Date()
     dep.setUTCHours(7, 0, 0, 0)
     const id = insertTemplate({ departAt: dep, repeatEvery: 'daily' })
 
-    generateRecurringRides()
+    await generateRecurringRides()
     const first = childrenOf(id)
     assert.equal(first.length, 1)
 
-    generateRecurringRides()
+    await generateRecurringRides()
     assert.equal(childrenOf(id).length, 1)
     assert.equal(childrenOf(id)[0].id, first[0].id)
   })

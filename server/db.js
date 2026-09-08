@@ -21,6 +21,12 @@ if (USE_POSTGRES) {
     idleTimeoutMillis: 30000,
   })
 
+  // node-postgres returns int8 (COUNT/SUM) and numeric (AVG) as strings by
+  // default. Our routes do arithmetic on these values, so coerce them to JS
+  // numbers so e.g. COUNT+cnt isn't turned into string concatenation.
+  pg.types.setTypeParser(20, (v) => (v === null ? null : parseInt(v, 10))) // int8
+  pg.types.setTypeParser(1700, (v) => (v === null ? null : parseFloat(v))) // numeric
+
   // Test connection
   pgPool.on('error', (err) => {
     console.error('Unexpected PostgreSQL pool error:', err)
@@ -50,6 +56,42 @@ function sqliteStmt(sql, params = []) {
   return { stmt: db.prepare(converted), params }
 }
 
+// Postgres compatibility shim. Most route SQL is written in SQLite flavour
+// (`?` placeholders, datetime('now'), INSERT OR IGNORE). Normalize the same
+// SQL text so it runs on PostgreSQL too.
+function pgStmt(sql, params = []) {
+  let s = sql
+    .replace(/cast\(strftime\('%H',\s*([^)]+)\)\s*as\s+int(?:eger)?\)/gi, 'EXTRACT(HOUR FROM $1)::int')
+    .replace(/\bdatetime\(\s*'now'\s*\)\b/gi, 'NOW()')
+    // SQLite datetime('now','-30 minutes') modifiers → Postgres interval math
+    .replace(/datetime\(\s*'now'\s*,\s*'([^']*)'\s*\)/gi, (m, mod) => {
+      const mm = mod.trim()
+      if (mm.startsWith('-')) return `NOW() - INTERVAL '${mm.slice(1).trim()}'`
+      if (mm.startsWith('+')) return `NOW() + INTERVAL '${mm.slice(1).trim()}'`
+      return `NOW() + INTERVAL '${mm}'`
+    })
+    // SQLite date(r.depart_at) → Postgres cast to date
+    .replace(/\bdate\(([^)]+)\)/gi, '($1)::date')
+
+  if (/^insert\s+or\s+ignore\s+into\b/i.test(s)) {
+    s = s.replace(/^insert\s+or\s+ignore\s+into\b/i, 'INSERT INTO')
+    if (!/\bon\s+conflict\b/i.test(s)) s = s.trim().replace(/;?\s*$/, '') + ' ON CONFLICT DO NOTHING'
+  }
+
+  // Anonymous `?` placeholders -> numbered $1..$n (only if not already numbered)
+  if (!/\$\d/.test(s) && /\?/.test(s)) {
+    let i = 0
+    s = s.replace(/\?/g, () => `$${++i}`)
+  }
+
+  // INSERTs must RETURN the id so lastInsertRowid works on Postgres
+  if (/^\s*insert\b/i.test(s) && !/\bRETURNING\b/i.test(s)) {
+    s = s.trim().replace(/;?\s*$/, '') + ' RETURNING id'
+  }
+
+  return { sql: s, params }
+}
+
 /**
  * Execute a query and return all rows
  */
@@ -57,7 +99,8 @@ export async function all(sql, params = []) {
   if (USE_POSTGRES) {
     const client = await pgPool.connect()
     try {
-      const result = await client.query(sql, params)
+      const { sql: q, params: p } = pgStmt(sql, params)
+      const result = await client.query(q, p)
       return result.rows
     } finally {
       client.release()
@@ -75,7 +118,8 @@ export async function get(sql, params = []) {
   if (USE_POSTGRES) {
     const client = await pgPool.connect()
     try {
-      const result = await client.query(sql, params)
+      const { sql: q, params: p } = pgStmt(sql, params)
+      const result = await client.query(q, p)
       return result.rows[0] || null
     } finally {
       client.release()
@@ -94,7 +138,8 @@ export async function run(sql, params = []) {
     const client = await pgPool.connect()
     try {
       // For INSERT statements, we need to handle RETURNING
-      const result = await client.query(sql, params)
+      const { sql: q, params: p } = pgStmt(sql, params)
+      const result = await client.query(q, p)
       return { lastInsertRowid: result.rows[0]?.id, changes: result.rowCount }
     } finally {
       client.release()
@@ -115,9 +160,18 @@ export async function transaction(fn) {
     try {
       await client.query('BEGIN')
       const result = await fn({
-        all: (sql, params) => client.query(sql, params).then(r => r.rows),
-        get: (sql, params) => client.query(sql, params).then(r => r.rows[0] || null),
-        run: (sql, params) => client.query(sql, params).then(r => ({ lastInsertRowid: r.rows[0]?.id, changes: r.rowCount })),
+        all: (sql, params) => {
+          const { sql: q, params: p } = pgStmt(sql, params)
+          return client.query(q, p).then(r => r.rows)
+        },
+        get: (sql, params) => {
+          const { sql: q, params: p } = pgStmt(sql, params)
+          return client.query(q, p).then(r => r.rows[0] || null)
+        },
+        run: (sql, params) => {
+          const { sql: q, params: p } = pgStmt(sql, params)
+          return client.query(q, p).then(r => ({ lastInsertRowid: r.rows[0]?.id, changes: r.rowCount }))
+        },
       })
       await client.query('COMMIT')
       return result
@@ -154,7 +208,8 @@ export async function exec(sql) {
   if (USE_POSTGRES) {
     const client = await pgPool.connect()
     try {
-      await client.query(sql)
+      const { sql: q } = pgStmt(sql)
+      await client.query(q)
     } finally {
       client.release()
     }

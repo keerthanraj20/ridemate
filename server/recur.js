@@ -1,4 +1,4 @@
-import { db } from './db.js'
+import { all, get, run } from './db.js'
 
 // Generate tomorrow's instance of each recurring ride (copied from the
 // original ride every day). Encodes schedule in repeat_child_on.
@@ -8,7 +8,7 @@ import { db } from './db.js'
 // Generated instances carry repeat_parent_id = template.id and a
 // repeat_child_on date ("YYYY-MM-DD") so we can regenerate each day.
 
-function copyInstance(template, dateStr) {
+async function copyInstance(template, dateStr) {
   const depart = new Date(template.depart_at)
   // Keep the same time-of-day (UTC) as the template. Constructing in UTC
   // (not local time) avoids DST shifts on the child instance.
@@ -17,30 +17,30 @@ function copyInstance(template, dateStr) {
     Date.UTC(y, m - 1, d, depart.getUTCHours(), depart.getUTCMinutes(), depart.getUTCSeconds())
   )
 
-  const insert = db.prepare(
+  await run(
     `INSERT INTO rides
        (user_id, vehicle_type, vehicle_model, from_name, from_lat, from_lng,
         to_name, to_lat, to_lng, depart_at, seats_total, price, notes, status,
         repeat_every, repeat_parent_id, repeat_child_on)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?, ?, ?)`
-  )
-  insert.run(
-    template.user_id,
-    template.vehicle_type,
-    template.vehicle_model,
-    template.from_name,
-    template.from_lat,
-    template.from_lng,
-    template.to_name,
-    template.to_lat,
-    template.to_lng,
-    next.toISOString(),
-    template.seats_total,
-    template.price,
-    template.notes,
-    template.repeat_every,
-    template.id,
-    dateStr
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?, ?, ?)`,
+    [
+      template.user_id,
+      template.vehicle_type,
+      template.vehicle_model,
+      template.from_name,
+      template.from_lat,
+      template.from_lng,
+      template.to_name,
+      template.to_lat,
+      template.to_lng,
+      next.toISOString(),
+      template.seats_total,
+      template.price,
+      template.notes,
+      template.repeat_every,
+      template.id,
+      dateStr,
+    ]
   )
 }
 
@@ -62,7 +62,7 @@ function shouldHaveInstanceOn(template, dateObj) {
   }
 }
 
-export function generateRecurringRides() {
+export async function generateRecurringRides() {
   // Work in UTC so the "tomorrow" boundary and every generated instance are
   // unambiguous and consistent regardless of the server's local timezone.
   const now = new Date()
@@ -73,31 +73,28 @@ export function generateRecurringRides() {
   const dateStr = `${y}-${m}-${d}`
 
   // All active templates (the originally-offered recurring rides)
-  const templates = db
-    .prepare(
-      `SELECT * FROM rides
-       WHERE repeat_every IN ('daily','weekly','weekdays')
-         AND status NOT IN ('cancelled','completed')
-         AND repeat_parent_id IS NULL`
-    )
-    .all()
+  const templates = await all(
+    `SELECT * FROM rides
+     WHERE repeat_every IN ('daily','weekly','weekdays')
+       AND status NOT IN ('cancelled','completed')
+       AND repeat_parent_id IS NULL`
+  )
 
   for (const t of templates) {
     if (!shouldHaveInstanceOn(t, tomorrowUtc)) continue
 
-    const exists = db
-      .prepare(
-        `SELECT id FROM rides
-         WHERE repeat_parent_id=? AND repeat_child_on=?`
-      )
-      .get(t.id, dateStr)
+    const exists = await get(
+      `SELECT id FROM rides
+       WHERE repeat_parent_id=? AND repeat_child_on=?`,
+      [t.id, dateStr]
+    )
 
-    if (!exists) copyInstance(t, dateStr)
+    if (!exists) await copyInstance(t, dateStr)
   }
 }
 
 export function startRecurringScheduler() {
   console.log('🔁 Recurring ride scheduler started (runs hourly)')
   generateRecurringRides()
-  setInterval(generateRecurringRides, 60 * 60 * 1000) // every hour
+  setInterval(() => generateRecurringRides().catch(() => {}), 60 * 60 * 1000) // every hour
 }

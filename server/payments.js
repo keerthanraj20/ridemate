@@ -13,7 +13,7 @@
 //   PAY_RAZORPAY_KEY_ID, PAY_RAZORPAY_KEY_SECRET, PAY_RAZORPAY_WEBHOOK_SECRET
 
 import crypto from 'node:crypto'
-import { db } from './db.js'
+import { all, get, run } from './db.js'
 
 export const PROVIDER = process.env.PAY_PROVIDER || 'mock'
 
@@ -91,12 +91,12 @@ function razorpayGateway() {
 
 // ---------- escrow lifecycle ----------
 
-export function getEscrowByRequest(requestId) {
-  return db.prepare('SELECT * FROM escrow_payments WHERE request_id=?').get(requestId)
+export async function getEscrowByRequest(requestId) {
+  return get('SELECT * FROM escrow_payments WHERE request_id=?', [requestId])
 }
 
-export function listEscrowsForUser(userId) {
-  return db.prepare(
+export async function listEscrowsForUser(userId) {
+  return all(
     `SELECT e.*,
             r.from_name, r.to_name, r.depart_at, r.price, r.status AS ride_status,
             uf.name AS payer_name, uo.name AS payee_name
@@ -105,13 +105,14 @@ export function listEscrowsForUser(userId) {
      JOIN users uf ON uf.id = e.payer_id
      JOIN users uo ON uo.id = e.payee_id
      WHERE e.payer_id=? OR e.payee_id=?
-     ORDER BY e.id DESC`
-  ).all(userId, userId)
+     ORDER BY e.id DESC`,
+    [userId, userId]
+  )
 }
 
 // Create the escrow hold for an ACCEPTED booking. Idempotent per request.
 export async function createEscrow({ requestId, rideId, payerId, payeeId, amountPaise }) {
-  const existing = getEscrowByRequest(requestId)
+  const existing = await getEscrowByRequest(requestId)
   if (existing) return { existing: true, escrow: existing }
 
   const receipt = `rm_${crypto.randomBytes(6).toString('hex')}`
@@ -122,40 +123,40 @@ export async function createEscrow({ requestId, rideId, payerId, payeeId, amount
   // Mock gateway "pays" immediately; Razorpay waits for the webhook.
   const status = paymentId ? 'captured' : 'created'
 
-  const info = db
-    .prepare(
-      `INSERT INTO escrow_payments
-         (ride_id, request_id, payer_id, payee_id, amount_paise, currency, status,
-          provider, provider_order_id, provider_payment_id, receipt,
-          captured_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?, ?)`
-    )
-    .run(
+  const info = await run(
+    `INSERT INTO escrow_payments
+       (ride_id, request_id, payer_id, payee_id, amount_paise, currency, status,
+        provider, provider_order_id, provider_payment_id, receipt,
+        captured_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?, ?)`,
+    [
       rideId, requestId, payerId, payeeId,
       Math.round(amountPaise), 'INR', status,
       gateway.provider, orderId, paymentId || null, receipt,
-      status === 'captured' ? new Date().toISOString() : null
-    )
+      status === 'captured' ? new Date().toISOString() : null,
+    ]
+  )
 
-  return { existing: false, escrow: db.prepare('SELECT * FROM escrow_payments WHERE id=?').get(Number(info.lastInsertRowid)) }
+  return { existing: false, escrow: await get('SELECT * FROM escrow_payments WHERE id=?', [Number(info.lastInsertRowid)]) }
 }
 
 // Mark a razorpay order as captured (called from the webhook handler).
-export function captureEscrowByOrderId(orderId, paymentId) {
-  const escrow = db.prepare('SELECT * FROM escrow_payments WHERE provider_order_id=?').get(orderId)
+export async function captureEscrowByOrderId(orderId, paymentId) {
+  const escrow = await get('SELECT * FROM escrow_payments WHERE provider_order_id=?', [orderId])
   if (!escrow) return null
   if (escrow.status !== 'created') return escrow
 
-  db.prepare(
-    "UPDATE escrow_payments SET status='captured', provider_payment_id=?, captured_at=? WHERE id=?"
-  ).run(paymentId || escrow.provider_payment_id, new Date().toISOString(), escrow.id)
+  await run(
+    "UPDATE escrow_payments SET status='captured', provider_payment_id=?, captured_at=? WHERE id=?",
+    [paymentId || escrow.provider_payment_id, new Date().toISOString(), escrow.id]
+  )
 
-  return db.prepare('SELECT * FROM escrow_payments WHERE id=?').get(escrow.id)
+  return get('SELECT * FROM escrow_payments WHERE id=?', [escrow.id])
 }
 
 // Refund a captured hold back to the rider (booking/ride cancellation).
 export async function refundEscrow(escrowId) {
-  const escrow = db.prepare('SELECT * FROM escrow_payments WHERE id=?').get(escrowId)
+  const escrow = await get('SELECT * FROM escrow_payments WHERE id=?', [escrowId])
   if (!escrow) return null
   if (escrow.status !== 'captured') return escrow
 
@@ -165,10 +166,10 @@ export async function refundEscrow(escrowId) {
     if (!ok) throw new Error('Refund at gateway failed — check payment details')
   }
 
-  db.prepare("UPDATE escrow_payments SET status='refunded', refunded_at=? WHERE id=?").run(
-    new Date().toISOString(), escrow.id
-  )
-  return db.prepare('SELECT * FROM escrow_payments WHERE id=?').get(escrow.id)
+  await run("UPDATE escrow_payments SET status='refunded', refunded_at=? WHERE id=?", [
+    new Date().toISOString(), escrow.id,
+  ])
+  return get('SELECT * FROM escrow_payments WHERE id=?', [escrow.id])
 }
 
 // Issue a refund against a captured Razorpay payment.
@@ -194,51 +195,48 @@ export async function refundGatewayPayment(paymentId, amountPaise) {
 }
 
 // Release a captured hold to the owner after the ride completes.
-export function releaseEscrow(escrowId) {
-  const escrow = db.prepare('SELECT * FROM escrow_payments WHERE id=?').get(escrowId)
+export async function releaseEscrow(escrowId) {
+  const escrow = await get('SELECT * FROM escrow_payments WHERE id=?', [escrowId])
   if (!escrow) return null
   if (escrow.status !== 'captured') return escrow
 
-  db.prepare("UPDATE escrow_payments SET status='released', released_at=? WHERE id=?").run(
-    new Date().toISOString(), escrow.id
-  )
-  return db.prepare('SELECT * FROM escrow_payments WHERE id=?').get(escrow.id)
+  await run("UPDATE escrow_payments SET status='released', released_at=? WHERE id=?", [
+    new Date().toISOString(), escrow.id,
+  ])
+  return get('SELECT * FROM escrow_payments WHERE id=?', [escrow.id])
 }
 
 // Auto-release: once a ride is completed, any hold captured more than
 // RELEASE_GRACE days ago moves to the owner without manual action.
-export function autoReleaseForRide(rideId) {
+export async function autoReleaseForRide(rideId) {
   const graceMs = RELEASE_GRACE * 24 * 60 * 60 * 1000
   const now = Date.now()
-  const rows = db
-    .prepare(
-      `SELECT * FROM escrow_payments
-       WHERE ride_id=? AND status='captured' AND released_at IS NULL`
-    )
-    .all(rideId)
+  const rows = await all(
+    `SELECT * FROM escrow_payments
+     WHERE ride_id=? AND status='captured' AND released_at IS NULL`,
+    [rideId]
+  )
 
   for (const escrow of rows) {
     const captured = new Date(escrow.captured_at || escrow.created_at).getTime()
     if (now - captured >= graceMs) {
-      db.prepare("UPDATE escrow_payments SET status='released', released_at=? WHERE id=?").run(
-        new Date().toISOString(), escrow.id
-      )
+      await run("UPDATE escrow_payments SET status='released', released_at=? WHERE id=?", [
+        new Date().toISOString(), escrow.id,
+      ])
     }
   }
 }
 
 // On ride cancellation, refund every captured hold on that ride automatically.
 export async function refundEscrowForRide(rideId) {
-  const rows = db
-    .prepare("SELECT * FROM escrow_payments WHERE ride_id=? AND status='captured'")
-    .all(rideId)
+  const rows = await all("SELECT * FROM escrow_payments WHERE ride_id=? AND status='captured'", [rideId])
   for (const escrow of rows) await refundEscrow(escrow.id)
   return rows.map((r) => r.id)
 }
 
 // On an individual booking cancellation, refund that rider's hold.
 export async function refundEscrowForRequest(requestId) {
-  const escrow = getEscrowByRequest(requestId)
+  const escrow = await getEscrowByRequest(requestId)
   if (!escrow) return null
   return refundEscrow(escrow.id)
 }
@@ -249,7 +247,7 @@ export async function verifyGatewayPayment(orderId, paymentId) {
   const gateway = buildGateway()
   if (gateway.provider === 'mock') {
     // mock always "captures" immediately — escrow should already be captured
-    const escrow = db.prepare("SELECT * FROM escrow_payments WHERE provider_order_id=?").get(orderId)
+    const escrow = await get("SELECT * FROM escrow_payments WHERE provider_order_id=?", [orderId])
     return escrow?.status === 'captured'
   }
 
@@ -266,7 +264,7 @@ export async function verifyGatewayPayment(orderId, paymentId) {
     const pay = await res.json()
     // Authorised/captured payment → confirm the hold
     if (pay.captured === true || pay.status === 'captured') {
-      const escrow = captureEscrowByOrderId(orderId, paymentId)
+      const escrow = await captureEscrowByOrderId(orderId, paymentId)
       return Boolean(escrow && escrow.status === 'captured')
     }
     return false

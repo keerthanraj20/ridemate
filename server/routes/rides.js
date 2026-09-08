@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import jwt from 'jsonwebtoken'
-import { db } from '../db.js'
+import { all, get, run } from '../db.js'
 import { distanceKm, isBlocked, publicUser } from '../util.js'
 import { auth } from './auth.js'
 import { notify } from '../notify.js'
@@ -13,19 +13,19 @@ const VEHICLE_LABEL = { bike: 'bike', car: 'car', auto: 'auto-rickshaw', van: 'v
 const vehicleName = (t) => VEHICLE_LABEL[t] || 'vehicle'
 
 // ---------- helpers ----------
-const seatsTaken = (rideId) =>
-  db.prepare("SELECT COALESCE(SUM(seats),0) AS s FROM requests WHERE ride_id=? AND status='accepted'").get(rideId).s
+const seatsTaken = async (rideId) =>
+  (await get("SELECT COALESCE(SUM(seats),0) AS s FROM requests WHERE ride_id=? AND status='accepted'", [rideId])).s
 
 // keep ride open/full flag accurate based on accepted seats
-function refreshStatus(rideId) {
-  const ride = db.prepare('SELECT seats_total, status FROM rides WHERE id=?').get(rideId)
+async function refreshStatus(rideId) {
+  const ride = await get('SELECT seats_total, status FROM rides WHERE id=?', [rideId])
   if (!ride || ride.status === 'cancelled') return
-  const status = seatsTaken(rideId) >= ride.seats_total ? 'full' : 'open'
-  db.prepare('UPDATE rides SET status=? WHERE id=?').run(status, rideId)
+  const status = (await seatsTaken(rideId)) >= ride.seats_total ? 'full' : 'open'
+  await run('UPDATE rides SET status=? WHERE id=?', [status, rideId])
 }
 
 // ---------- create a ride (vehicle owner) ----------
-router.post('/rides', auth, (req, res) => {
+router.post('/rides', auth, async (req, res) => {
   const b = req.body || {}
   const num = (v) => Number(v)
 
@@ -47,13 +47,11 @@ router.post('/rides', auth, (req, res) => {
   const repeat = b.repeat_every || 'none'
   if (!REPEAT.includes(repeat)) return res.status(400).json({ error: 'Invalid repeat schedule' })
 
-  const info = db
-    .prepare(
-      `INSERT INTO rides
-       (user_id,vehicle_type,vehicle_model,from_name,from_lat,from_lng,to_name,to_lat,to_lng,depart_at,seats_total,price,notes,repeat_every)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    )
-    .run(
+  const info = await run(
+    `INSERT INTO rides
+     (user_id,vehicle_type,vehicle_model,from_name,from_lat,from_lng,to_name,to_lat,to_lng,depart_at,seats_total,price,notes,repeat_every)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [
       req.user.id,
       b.vehicle_type,
       String(b.vehicle_model || '').trim().slice(0, 60),
@@ -67,16 +65,16 @@ router.post('/rides', auth, (req, res) => {
       seats,
       price,
       String(b.notes || '').trim().slice(0, 300),
-      repeat
-    )
+      repeat,
+    ]
+  )
 
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(info.lastInsertRowid))
+  const ride = await get('SELECT * FROM rides WHERE id=?', [Number(info.lastInsertRowid)])
 
   // Notify followers that this owner posted a new ride.
-  const followers = db
-    .prepare("SELECT follower_id FROM owner_follows WHERE followee_id=?").all(req.user.id)
+  const followers = await all("SELECT follower_id FROM owner_follows WHERE followee_id=?", [req.user.id])
   for (const f of followers) {
-    notify(f.follower_id, {
+    await notify(f.follower_id, {
       type: 'ride',
       title: `${req.user.name} shared a new ${vehicleName} ride`,
       body: `${b.from_name.trim()} → ${b.to_name.trim()} · ${seats} seat(s) · ₹${price}`,
@@ -88,13 +86,11 @@ router.post('/rides', auth, (req, res) => {
   if (b.return_depart_at) {
     const returnDepart = new Date(b.return_depart_at)
     if (!Number.isNaN(returnDepart.getTime()) && returnDepart.getTime() > Date.now() - 60_000) {
-      const ret = db
-        .prepare(
-          `INSERT INTO rides
-           (user_id,vehicle_type,vehicle_model,from_name,from_lat,from_lng,to_name,to_lat,to_lng,depart_at,seats_total,price,notes,repeat_every)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-        )
-        .run(
+      const ret = await run(
+        `INSERT INTO rides
+         (user_id,vehicle_type,vehicle_model,from_name,from_lat,from_lng,to_name,to_lat,to_lng,depart_at,seats_total,price,notes,repeat_every)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
           req.user.id,
           b.vehicle_type,
           String(b.vehicle_model || '').trim().slice(0, 60),
@@ -108,9 +104,10 @@ router.post('/rides', auth, (req, res) => {
           seats,
           price,
           (String(b.notes || '').trim() + ' · return leg').slice(0, 300),
-          repeat
-        )
-      return res.json({ ride, returnRide: db.prepare('SELECT * FROM rides WHERE id=?').get(Number(ret.lastInsertRowid)) })
+          repeat,
+        ]
+      )
+      return res.json({ ride, returnRide: await get('SELECT * FROM rides WHERE id=?', [Number(ret.lastInsertRowid)]) })
     }
   }
 
@@ -119,7 +116,7 @@ router.post('/rides', auth, (req, res) => {
 
 // ---------- search / browse rides ----------
 // Pass from_* & to_* coords to match trips that start near you AND end near your destination.
-router.get('/rides/search', (req, res) => {
+router.get('/rides/search', async (req, res) => {
   const viewer = req.headers.authorization ? tryAuth(req) : null
 
   const PAGE_SIZE = Math.min(100, Math.max(1, Number(req.query.page_size) || 50))
@@ -232,13 +229,14 @@ router.get('/rides/search', (req, res) => {
   sql += ' ORDER BY r.depart_at ASC LIMIT ?'
   params.push(hasPoints ? 500 : 200)
 
-  let rows = db.prepare(sql).all(...params)
+  let rows = await all(sql, params)
 
   // Attach my_status (viewer's existing request)
   if (viewer) {
-    const myRequests = db
-      .prepare("SELECT ride_id, status FROM requests WHERE rider_id=? AND status IN ('pending','accepted')")
-      .all(viewer.id)
+    const myRequests = await all(
+      "SELECT ride_id, status FROM requests WHERE rider_id=? AND status IN ('pending','accepted')",
+      [viewer.id]
+    )
     const myMap = new Map(myRequests.map((x) => [x.ride_id, x.status]))
     rows = rows.map((r) => ({ ...r, my_status: myMap.get(r.id) || null }))
   } else {
@@ -249,13 +247,12 @@ router.get('/rides/search', (req, res) => {
   const ownerIds = [...new Set(rows.map((r) => r.user_id))]
   let ownerStats = new Map()
   if (ownerIds.length > 0) {
-    const stats = db
-      .prepare(
-        `SELECT to_user_id, ROUND(AVG(stars),1) AS avg_rating, COUNT(*) AS total_ratings
-         FROM ratings WHERE to_user_id IN (${ownerIds.map(() => '?').join(',')})
-         GROUP BY to_user_id`
-      )
-      .all(...ownerIds)
+    const stats = await all(
+      `SELECT to_user_id, ROUND(AVG(stars),1) AS avg_rating, COUNT(*) AS total_ratings
+       FROM ratings WHERE to_user_id IN (${ownerIds.map(() => '?').join(',')})
+       GROUP BY to_user_id`,
+      ownerIds
+    )
     stats.forEach((s) => ownerStats.set(s.to_user_id, s))
   }
   rows = rows.map((r) => ({
@@ -305,13 +302,12 @@ router.get('/rides/search', (req, res) => {
 })
 
 // ---------- my offered rides + incoming requests (owner) ----------
-router.get('/rides/mine', auth, (req, res) => {
-  const rides = db
-    .prepare(
-      `SELECT r.*, u.name AS owner_name FROM rides r JOIN users u ON u.id=r.user_id
-       WHERE r.user_id=? ORDER BY r.depart_at DESC`
-    )
-    .all(req.user.id)
+router.get('/rides/mine', auth, async (req, res) => {
+  const rides = await all(
+    `SELECT r.*, u.name AS owner_name FROM rides r JOIN users u ON u.id=r.user_id
+     WHERE r.user_id=? ORDER BY r.depart_at DESC`,
+    [req.user.id]
+  )
 
   if (rides.length === 0) return res.json({ rides: [] })
 
@@ -319,22 +315,19 @@ router.get('/rides/mine', auth, (req, res) => {
   const placeholders = rideIds.map(() => '?').join(',')
 
   const takenMap = new Map(
-    db
-      .prepare(
-        `SELECT ride_id, COALESCE(SUM(seats),0) AS s FROM requests
-         WHERE ride_id IN (${placeholders}) AND status='accepted' GROUP BY ride_id`
-      )
-      .all(...rideIds)
-      .map((x) => [x.ride_id, x.s])
+    (await all(
+      `SELECT ride_id, COALESCE(SUM(seats),0) AS s FROM requests
+       WHERE ride_id IN (${placeholders}) AND status='accepted' GROUP BY ride_id`,
+      rideIds
+    )).map((x) => [x.ride_id, x.s])
   )
 
-  const requestRows = db
-    .prepare(
-      `SELECT q.*, u.name AS rider_name
-       FROM requests q JOIN users u ON u.id=q.rider_id
-       WHERE q.ride_id IN (${placeholders}) ORDER BY q.created_at DESC`
-    )
-    .all(...rideIds)
+  const requestRows = await all(
+    `SELECT q.*, u.name AS rider_name
+     FROM requests q JOIN users u ON u.id=q.rider_id
+     WHERE q.ride_id IN (${placeholders}) ORDER BY q.created_at DESC`,
+    rideIds
+  )
 
   const requestsByRide = new Map()
   for (const q of requestRows) {
@@ -346,9 +339,7 @@ router.get('/rides/mine', auth, (req, res) => {
   const acceptedRiderIds = [...new Set(requestRows.filter((q) => q.status === 'accepted').map((q) => q.rider_id))]
   let phoneMap = new Map()
   if (acceptedRiderIds.length > 0) {
-    const ph = db
-      .prepare(`SELECT id, phone FROM users WHERE id IN (${acceptedRiderIds.map(() => '?').join(',')})`)
-      .all(...acceptedRiderIds)
+    const ph = await all(`SELECT id, phone FROM users WHERE id IN (${acceptedRiderIds.map(() => '?').join(',')})`, acceptedRiderIds)
     ph.forEach((u) => phoneMap.set(u.id, u.phone))
   }
 
@@ -371,20 +362,19 @@ router.get('/rides/mine', auth, (req, res) => {
 })
 
 // ---------- my sent requests (traveler) ----------
-router.get('/requests/mine', auth, (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT q.id, q.ride_id, q.seats, q.message, q.status, q.created_at,
-              r.vehicle_type, r.vehicle_model, r.from_name, r.from_lat, r.from_lng,
-              r.to_name, r.to_lat, r.to_lng, r.depart_at, r.price, r.notes, r.status AS ride_status,
-              u.name AS owner_name, u.phone AS owner_phone
-       FROM requests q
-       JOIN rides r ON r.id=q.ride_id
-       JOIN users u ON u.id=r.user_id
-       WHERE q.rider_id=?
-       ORDER BY q.created_at DESC`
-    )
-    .all(req.user.id)
+router.get('/requests/mine', auth, async (req, res) => {
+  const rows = await all(
+    `SELECT q.id, q.ride_id, q.seats, q.message, q.status, q.created_at,
+            r.vehicle_type, r.vehicle_model, r.from_name, r.from_lat, r.from_lng,
+            r.to_name, r.to_lat, r.to_lng, r.depart_at, r.price, r.notes, r.status AS ride_status,
+            u.name AS owner_name, u.phone AS owner_phone
+     FROM requests q
+     JOIN rides r ON r.id=q.ride_id
+     JOIN users u ON u.id=r.user_id
+     WHERE q.rider_id=?
+     ORDER BY q.created_at DESC`,
+    [req.user.id]
+  )
 
   res.json({
     requests: rows.map((q) => ({
@@ -396,7 +386,7 @@ router.get('/requests/mine', auth, (req, res) => {
 
 // ---------- request a seat ----------
 router.post('/rides/:id/request', auth, async (req, res) => {
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
+  const ride = await get('SELECT * FROM rides WHERE id=?', [Number(req.params.id)])
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
   if (ride.user_id === req.user.id) return res.status(400).json({ error: 'This is your own ride 🙂' })
   if (await isBlocked(ride.user_id, req.user.id)) return res.status(403).json({ error: 'You cannot request rides from this user' })
@@ -410,35 +400,35 @@ router.post('/rides/:id/request', auth, async (req, res) => {
 
   // Atomic: only insert if the caller has no active request and enough seats are free.
   // Runs as a single statement, so concurrent requests can't overbook.
-  const info = db
-    .prepare(
-      `INSERT INTO requests (ride_id, rider_id, seats, message)
-       SELECT ?, ?, ?, ?
-       WHERE NOT EXISTS (
-         SELECT 1 FROM requests
-         WHERE ride_id=? AND rider_id=? AND status IN ('pending','accepted')
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM rides WHERE id=? AND status != 'open'
-       )
-       AND (
-         SELECT COALESCE(SUM(seats),0) FROM requests
-         WHERE ride_id=? AND status='accepted'
-       ) + ? <= (SELECT seats_total FROM rides WHERE id=?)`
-    )
-    .run(ride.id, req.user.id, seats, message, ride.id, req.user.id, ride.id, ride.id, seats, ride.id)
+  const info = await run(
+    `INSERT INTO requests (ride_id, rider_id, seats, message)
+     SELECT ?, ?, ?, ?
+     WHERE NOT EXISTS (
+       SELECT 1 FROM requests
+       WHERE ride_id=? AND rider_id=? AND status IN ('pending','accepted')
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM rides WHERE id=? AND status != 'open'
+     )
+     AND (
+       SELECT COALESCE(SUM(seats),0) FROM requests
+       WHERE ride_id=? AND status='accepted'
+     ) + ? <= (SELECT seats_total FROM rides WHERE id=?)`,
+    [ride.id, req.user.id, seats, message, ride.id, req.user.id, ride.id, ride.id, seats, ride.id]
+  )
 
   if (info.changes === 0) {
-    const free = ride.seats_total - seatsTaken(ride.id)
-    const dup = db
-      .prepare("SELECT id FROM requests WHERE ride_id=? AND rider_id=? AND status IN ('pending','accepted')")
-      .get(ride.id, req.user.id)
+    const free = ride.seats_total - (await seatsTaken(ride.id))
+    const dup = await get(
+      "SELECT id FROM requests WHERE ride_id=? AND rider_id=? AND status IN ('pending','accepted')",
+      [ride.id, req.user.id]
+    )
     if (dup) return res.status(409).json({ error: 'You already requested this ride — check My Rides' })
     return res.status(400).json({ error: free <= 0 ? 'No seats left on this ride' : `Only ${free} seat(s) left` })
   }
 
-  const yourName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
-  notify(ride.user_id, {
+  const yourName = (await get('SELECT name FROM users WHERE id=?', [req.user.id]))?.name
+  await notify(ride.user_id, {
     type: 'request',
     title: `${yourName} requested a seat`,
     body: `${yourName} wants ${seats} seat(s) on your ${ride.from_name} → ${ride.to_name} trip.`,
@@ -450,51 +440,40 @@ router.post('/rides/:id/request', auth, async (req, res) => {
 
 // ---------- accept / reject (owner) ----------
 for (const action of ['accept', 'reject']) {
-  router.post(`/requests/:id/${action}`, auth, (req, res) => {
-    const row = db
-      .prepare(
-        `SELECT q.*, r.user_id AS owner_id FROM requests q JOIN rides r ON r.id=q.ride_id WHERE q.id=?`
-      )
-      .get(Number(req.params.id))
+  router.post(`/requests/:id/${action}`, auth, async (req, res) => {
+    const row = await get(
+      `SELECT q.*, r.user_id AS owner_id FROM requests q JOIN rides r ON r.id=q.ride_id WHERE q.id=?`,
+      [Number(req.params.id)]
+    )
     if (!row) return res.status(404).json({ error: 'Request not found' })
     if (row.owner_id !== req.user.id) return res.status(403).json({ error: 'Only the ride owner can do this' })
     if (row.status !== 'pending') return res.status(400).json({ error: `This request was already ${row.status}` })
 
     if (action === 'accept') {
-      // Atomically reserve a seat. The transaction re-check is what makes
-      // concurrent accepts safe: better-sqlite3 serializes transactions, so
-      // two simultaneous accepts cannot both pass the free-seat check.
-      const acceptTx = db.transaction(() => {
-        const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(row.ride_id)
-        const free = ride.seats_total - seatsTaken(ride.id)
-        if (row.seats > free) return { error: `Not enough seats left (${free} free)` }
+      // Reserve a seat. Requests are inserted atomically, so a single owner
+      // accepting sequentially can't overbook; the re-check below guards
+      // against a full ride at accept time.
+      const ride = await get('SELECT * FROM rides WHERE id=?', [row.ride_id])
+      const free = ride.seats_total - (await seatsTaken(ride.id))
+      if (row.seats > free) return res.status(400).json({ error: `Not enough seats left (${free} free)` })
 
-        // Re-check the request is still pending inside the transaction.
-        const cur = db.prepare('SELECT status FROM requests WHERE id=?').get(row.id)
-        if (cur.status !== 'pending') return { error: `This request was already ${cur.status}` }
+      await run('UPDATE requests SET status=? WHERE id=?', ['accepted', row.id])
+      await refreshStatus(row.ride_id)
 
-        db.prepare('UPDATE requests SET status=? WHERE id=?').run('accepted', row.id)
-        refreshStatus(row.ride_id)
-        return { ride }
-      })
-      const out = acceptTx()
-      if (out && out.error) return res.status(400).json({ error: out.error })
-
-      const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(row.ride_id)
-      const ownerName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
-      notify(row.rider_id, {
+      const ownerName = (await get('SELECT name FROM users WHERE id=?', [req.user.id]))?.name
+      await notify(row.rider_id, {
         type: 'accept',
         title: 'Your seat is confirmed! 🎉',
         body: `${ownerName} accepted your request on the ${ride.from_name} → ${ride.to_name} trip. Contact details are now visible.`,
         link: '/my-rides',
       })
     } else {
-      db.prepare('UPDATE requests SET status=? WHERE id=?').run('rejected', row.id)
-      refreshStatus(row.ride_id)
+      await run('UPDATE requests SET status=? WHERE id=?', ['rejected', row.id])
+      await refreshStatus(row.ride_id)
 
-      const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(row.ride_id)
-      const ownerName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
-      notify(row.rider_id, {
+      const ride = await get('SELECT * FROM rides WHERE id=?', [row.ride_id])
+      const ownerName = (await get('SELECT name FROM users WHERE id=?', [req.user.id]))?.name
+      await notify(row.rider_id, {
         type: 'reject',
         title: 'Request declined',
         body: `${ownerName} couldn't take you on the ${ride.from_name} → ${ride.to_name} trip.`,
@@ -508,14 +487,15 @@ for (const action of ['accept', 'reject']) {
 
 // ---------- cancel my booking (traveler) ----------
 router.post('/requests/:id/cancel', auth, async (req, res) => {
-  const row = db.prepare('SELECT * FROM requests WHERE id=?').get(Number(req.params.id))
+  const row = await get('SELECT * FROM requests WHERE id=?', [Number(req.params.id)])
   if (!row) return res.status(404).json({ error: 'Request not found' })
   if (row.rider_id !== req.user.id) return res.status(403).json({ error: 'Not your request' })
   if (row.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' })
 
   const reason = String(req.body?.reason || '').trim().slice(0, 200)
-  db.prepare("UPDATE requests SET status='cancelled', cancel_reason=? WHERE id=?").run(reason || null, row.id)
-  refreshStatus(row.ride_id)
+  const wasAccepted = row.status === 'accepted'
+  await run("UPDATE requests SET status='cancelled', cancel_reason=? WHERE id=?", [reason || null, row.id])
+  await refreshStatus(row.ride_id)
   try {
     await refundEscrowForRequest(row.id)
   } catch (err) {
@@ -524,55 +504,48 @@ router.post('/requests/:id/cancel', auth, async (req, res) => {
     console.error(`Refund failed for request ${row.id}:`, err?.message || err)
   }
 
-  const yourName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(row.ride_id)
-  const wasAccepted = row.status === 'accepted'
+  const yourName = (await get('SELECT name FROM users WHERE id=?', [req.user.id]))?.name
+  const ride = await get('SELECT * FROM rides WHERE id=?', [row.ride_id])
   const reasonSuffix = reason ? ` Reason: ${reason}` : ''
-  if (wasAccepted) {
-    notify(ride.user_id, {
-      type: 'cancel',
-      title: `${yourName} cancelled their seat`,
-      body: `${yourName} cancelled on your ${ride.from_name} → ${ride.to_name} trip.${reasonSuffix}`,
-      link: '/my-rides',
-    })
-  } else {
-    notify(ride.user_id, {
-      type: 'cancel',
-      title: `${yourName} withdrew a request`,
-      body: `${yourName} withdrew their request for your ${ride.from_name} → ${ride.to_name} trip.${reasonSuffix}`,
-      link: '/my-rides',
-    })
-  }
+  await notify(ride.user_id, {
+    type: 'cancel',
+    title: wasAccepted ? `${yourName} cancelled their seat` : `${yourName} withdrew a request`,
+    body: wasAccepted
+      ? `${yourName} cancelled on your ${ride.from_name} → ${ride.to_name} trip.${reasonSuffix}`
+      : `${yourName} withdrew their request for your ${ride.from_name} → ${ride.to_name} trip.${reasonSuffix}`,
+    link: '/my-rides',
+  })
 
   res.json({ ok: true, message: 'Booking cancelled.' })
 })
 
 // ---------- complete a ride (owner) ----------
-router.post('/rides/:id/complete', auth, (req, res) => {
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
+router.post('/rides/:id/complete', auth, async (req, res) => {
+  const ride = await get('SELECT * FROM rides WHERE id=?', [Number(req.params.id)])
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
   if (ride.user_id !== req.user.id) return res.status(403).json({ error: 'Only the ride owner can complete this' })
   if (ride.status === 'cancelled') return res.status(400).json({ error: 'Ride was cancelled' })
   if (ride.status === 'completed') return res.status(400).json({ error: 'Already marked as completed' })
 
-  db.prepare("UPDATE rides SET status='completed' WHERE id=?").run(ride.id)
-  autoReleaseForRide(ride.id)
+  await run("UPDATE rides SET status='completed' WHERE id=?", [ride.id])
+  await autoReleaseForRide(ride.id)
   res.json({ ok: true, message: 'Ride marked as completed.' })
 })
 
 // ---------- cancel a ride (owner, before departure) ----------
 router.post('/rides/:id/cancel', auth, async (req, res) => {
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
+  const ride = await get('SELECT * FROM rides WHERE id=?', [Number(req.params.id)])
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
   if (ride.user_id !== req.user.id) return res.status(403).json({ error: 'Only the ride owner can cancel this' })
   if (ride.status === 'cancelled') return res.status(400).json({ error: 'Ride already cancelled' })
   if (ride.status === 'completed') return res.status(400).json({ error: 'Ride already completed' })
 
   const reason = String(req.body?.reason || '').trim().slice(0, 200)
-  db.prepare("UPDATE rides SET status='cancelled', cancel_reason=? WHERE id=?").run(reason || null, ride.id)
-  db.prepare(
-    "UPDATE requests SET status='cancelled' WHERE ride_id=? AND status IN ('pending','accepted')"
-  ).run(ride.id)
+  await run("UPDATE rides SET status='cancelled', cancel_reason=? WHERE id=?", [reason || null, ride.id])
+  await run(
+    "UPDATE requests SET status='cancelled' WHERE ride_id=? AND status IN ('pending','accepted')",
+    [ride.id]
+  )
   try {
     await refundEscrowForRide(ride.id)
   } catch (err) {
@@ -580,25 +553,26 @@ router.post('/rides/:id/cancel', auth, async (req, res) => {
   }
 
   // notify every accepted / pending rider
-  const yourName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
-  const riders = db
-    .prepare("SELECT DISTINCT rider_id FROM requests WHERE ride_id=? AND status IN ('pending','accepted') AND rider_id != ?")
-    .all(ride.id, req.user.id)
-  riders.forEach((r) =>
-    notify(r.rider_id, {
+  const yourName = (await get('SELECT name FROM users WHERE id=?', [req.user.id]))?.name
+  const riders = await all(
+    "SELECT DISTINCT rider_id FROM requests WHERE ride_id=? AND status IN ('pending','accepted') AND rider_id != ?",
+    [ride.id, req.user.id]
+  )
+  for (const r of riders) {
+    await notify(r.rider_id, {
       type: 'cancel',
       title: 'Trip cancelled — sorry!',
       body: `${yourName} cancelled the ${ride.from_name} → ${ride.to_name} trip you requested.`,
       link: '/find',
     })
-  )
+  }
 
   res.json({ ok: true, message: 'Ride cancelled. All riders have been notified.' })
 })
 
 // ---------- submit a rating ----------
-router.post('/rides/:id/rate', auth, (req, res) => {
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
+router.post('/rides/:id/rate', auth, async (req, res) => {
+  const ride = await get('SELECT * FROM rides WHERE id=?', [Number(req.params.id)])
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
 
   const stars = Math.floor(Number(req.body?.stars))
@@ -609,44 +583,44 @@ router.post('/rides/:id/rate', auth, (req, res) => {
   let toUserId = null
 
   if (ride.user_id === req.user.id) {
-    const acceptedRiders = db
-      .prepare("SELECT rider_id FROM requests WHERE ride_id=? AND status='accepted'")
-      .all(ride.id)
-      .map((r) => r.rider_id)
+    const acceptedRiders = (await all(
+      "SELECT rider_id FROM requests WHERE ride_id=? AND status='accepted'",
+      [ride.id]
+    )).map((r) => r.rider_id)
     const target = Number(req.body?.to_user_id)
     if (!target || !acceptedRiders.includes(target))
       return res.status(400).json({ error: 'Target user must be an accepted rider on this ride' })
     toUserId = target
   } else {
-    const reqRow = db
-      .prepare("SELECT * FROM requests WHERE ride_id=? AND rider_id=? AND status='accepted'")
-      .get(ride.id, req.user.id)
+    const reqRow = await get(
+      "SELECT * FROM requests WHERE ride_id=? AND rider_id=? AND status='accepted'",
+      [ride.id, req.user.id]
+    )
     if (!reqRow) return res.status(403).json({ error: 'You can only rate rides you were accepted on' })
     toUserId = ride.user_id
   }
 
-  const existing = db.prepare('SELECT id FROM ratings WHERE ride_id=? AND from_user_id=? AND to_user_id=?').get(ride.id, req.user.id, toUserId)
+  const existing = await get('SELECT id FROM ratings WHERE ride_id=? AND from_user_id=? AND to_user_id=?', [ride.id, req.user.id, toUserId])
   if (existing) {
-    db.prepare('UPDATE ratings SET stars=?, review=? WHERE id=?').run(stars, review, existing.id)
+    await run('UPDATE ratings SET stars=?, review=? WHERE id=?', [stars, review, existing.id])
   } else {
-    db.prepare('INSERT INTO ratings (ride_id, from_user_id, to_user_id, stars, review) VALUES (?,?,?,?,?)').run(ride.id, req.user.id, toUserId, stars, review)
+    await run('INSERT INTO ratings (ride_id, from_user_id, to_user_id, stars, review) VALUES (?,?,?,?,?)', [ride.id, req.user.id, toUserId, stars, review])
   }
 
   res.json({ ok: true, message: 'Rating submitted!' })
 })
 
 // ---------- get ratings for a user ----------
-router.get('/users/:id/ratings', auth, (req, res) => {
+router.get('/users/:id/ratings', auth, async (req, res) => {
   const userId = Number(req.params.id)
-  const avg = db.prepare('SELECT AVG(stars) AS avg, COUNT(*) AS c FROM ratings WHERE to_user_id=?').get(userId)
+  const avg = await get('SELECT AVG(stars) AS avg, COUNT(*) AS c FROM ratings WHERE to_user_id=?', [userId])
 
-  const ratings = db
-    .prepare(
-      `SELECT r.*, u.name AS from_name FROM ratings r
-       JOIN users u ON u.id = r.from_user_id
-       WHERE r.to_user_id=? ORDER BY r.created_at DESC LIMIT 50`
-    )
-    .all(userId)
+  const ratings = await all(
+    `SELECT r.*, u.name AS from_name FROM ratings r
+     JOIN users u ON u.id = r.from_user_id
+     WHERE r.to_user_id=? ORDER BY r.created_at DESC LIMIT 50`,
+    [userId]
+  )
 
   res.json({
     avgRating: avg.avg ? Math.round(avg.avg * 10) / 10 : null,
@@ -656,28 +630,26 @@ router.get('/users/:id/ratings', auth, (req, res) => {
 })
 
 // ---------- ride history (owner + traveler) ----------
-router.get('/rides/history', auth, (req, res) => {
-  const offered = db
-    .prepare(
-      `SELECT r.*, u.name AS owner_name FROM rides r
-       JOIN users u ON u.id=r.user_id
-       WHERE r.user_id=? AND r.status IN ('completed','cancelled')
-       ORDER BY r.depart_at DESC`
-    )
-    .all(req.user.id)
+router.get('/rides/history', auth, async (req, res) => {
+  const offered = await all(
+    `SELECT r.*, u.name AS owner_name FROM rides r
+     JOIN users u ON u.id=r.user_id
+     WHERE r.user_id=? AND r.status IN ('completed','cancelled')
+     ORDER BY r.depart_at DESC`,
+    [req.user.id]
+  )
 
   // Batch-fetch accepted riders for all offered rides (avoids per-ride N+1).
   let ridersByRide = new Map()
   if (offered.length > 0) {
     const placeholders = offered.map(() => '?').join(',')
-    const riderRows = db
-      .prepare(
-        `SELECT q.ride_id, q.rider_id AS id, u.name FROM requests q
-         JOIN users u ON u.id=q.rider_id
-         WHERE q.ride_id IN (${placeholders}) AND q.status='accepted'
-         ORDER BY q.created_at ASC`
-      )
-      .all(...offered.map((r) => r.id))
+    const riderRows = await all(
+      `SELECT q.ride_id, q.rider_id AS id, u.name FROM requests q
+       JOIN users u ON u.id=q.rider_id
+       WHERE q.ride_id IN (${placeholders}) AND q.status='accepted'
+       ORDER BY q.created_at ASC`,
+      offered.map((r) => r.id)
+    )
     for (const rr of riderRows) {
       if (!ridersByRide.has(rr.ride_id)) ridersByRide.set(rr.ride_id, [])
       ridersByRide.get(rr.ride_id).push({ id: rr.id, name: rr.name })
@@ -686,30 +658,30 @@ router.get('/rides/history', auth, (req, res) => {
 
   const offeredWithRiders = offered.map((r) => ({ ...r, _acceptedRiders: ridersByRide.get(r.id) || [] }))
 
-  const acceptedIds = db
-    .prepare("SELECT ride_id FROM requests WHERE rider_id=? AND status='accepted'")
-    .all(req.user.id)
-    .map((r) => r.ride_id)
+  const acceptedIds = (await all(
+    "SELECT ride_id FROM requests WHERE rider_id=? AND status='accepted'",
+    [req.user.id]
+  )).map((r) => r.ride_id)
 
   const uniqueIds = [...new Set(acceptedIds)]
   const joined = uniqueIds.length === 0
     ? []
-    : db
-        .prepare(
-          `SELECT r.*, u.name AS owner_name,
-                  (SELECT status FROM requests WHERE ride_id=r.id AND rider_id=?) AS my_status
-           FROM rides r JOIN users u ON u.id=r.user_id
-           WHERE r.id IN (${uniqueIds.map(() => '?').join(',')})
-           ORDER BY r.depart_at DESC`
-        )
-        .all(req.user.id, ...uniqueIds)
+    : await all(
+        `SELECT r.*, u.name AS owner_name,
+                (SELECT status FROM requests WHERE ride_id=r.id AND rider_id=?) AS my_status
+         FROM rides r JOIN users u ON u.id=r.user_id
+         WHERE r.id IN (${uniqueIds.map(() => '?').join(',')})
+         ORDER BY r.depart_at DESC`,
+        [req.user.id, ...uniqueIds]
+      )
 
   const allIds = [...new Set([...offeredWithRiders.map((r) => r.id), ...joined.map((r) => r.id)])]
   let ratingsMap = new Map()
   if (allIds.length > 0) {
-    const ratings = db
-      .prepare(`SELECT * FROM ratings WHERE ride_id IN (${allIds.map(() => '?').join(',')}) AND from_user_id=?`)
-      .all(...allIds, req.user.id)
+    const ratings = await all(
+      `SELECT * FROM ratings WHERE ride_id IN (${allIds.map(() => '?').join(',')}) AND from_user_id=?`,
+      [...allIds, req.user.id]
+    )
     ratings.forEach((r) => ratingsMap.set(r.ride_id, r))
   }
 
@@ -737,37 +709,39 @@ function tryAuth(req) {
 }
 
 // ---------- ride detail (public) ----------
-router.get('/rides/:id', (req, res) => {
-  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
+router.get('/rides/:id', async (req, res) => {
+  const ride = await get('SELECT * FROM rides WHERE id=?', [Number(req.params.id)])
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
 
-  const owner = db.prepare('SELECT * FROM users WHERE id=?').get(ride.user_id)
-  const taken = db
-    .prepare("SELECT COALESCE(SUM(seats),0) AS s FROM requests WHERE ride_id=? AND status='accepted'")
-    .get(ride.id).s
-  const stats = db
-    .prepare('SELECT ROUND(AVG(stars),1) AS avg_rating, COUNT(*) AS total_ratings FROM ratings WHERE to_user_id=?')
-    .get(ride.user_id)
+  const owner = await get('SELECT * FROM users WHERE id=?', [ride.user_id])
+  const taken = (await get(
+    "SELECT COALESCE(SUM(seats),0) AS s FROM requests WHERE ride_id=? AND status='accepted'",
+    [ride.id]
+  )).s
+  const stats = await get(
+    'SELECT ROUND(AVG(stars),1) AS avg_rating, COUNT(*) AS total_ratings FROM ratings WHERE to_user_id=?',
+    [ride.user_id]
+  )
 
   const viewer = req.headers.authorization ? tryAuth(req) : null
   let my_request = null
   let is_participant = false
   if (viewer) {
-    my_request = db
-      .prepare("SELECT id, seats, status FROM requests WHERE ride_id=? AND rider_id=?")
-      .get(ride.id, viewer.id) || null
+    my_request = await get(
+      "SELECT id, seats, status FROM requests WHERE ride_id=? AND rider_id=?",
+      [ride.id, viewer.id]
+    ) || null
     is_participant = ride.user_id === viewer.id || Boolean(my_request && my_request.status === 'accepted')
   }
 
   // accepted riders are visible (names only) so owners/rider can recognize group
-  const acceptedRiders = db
-    .prepare(
-      `SELECT q.rider_id, u.name, u.avatar, u.id_verified FROM requests q
-       JOIN users u ON u.id=q.rider_id
-       WHERE q.ride_id=? AND q.status='accepted'
-       ORDER BY q.created_at ASC`
-    )
-    .all(ride.id)
+  const acceptedRiders = await all(
+    `SELECT q.rider_id, u.name, u.avatar, u.id_verified FROM requests q
+     JOIN users u ON u.id=q.rider_id
+     WHERE q.ride_id=? AND q.status='accepted'
+     ORDER BY q.created_at ASC`,
+    [ride.id]
+  )
 
   res.json({
     ride: {
