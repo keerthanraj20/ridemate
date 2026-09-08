@@ -3,6 +3,7 @@ import { db } from '../db.js'
 import { auth } from './auth.js'
 import { isBlocked } from '../util.js'
 import { notify, unreadCount } from '../notify.js'
+import { pushToUser } from '../ws.js'
 
 const router = Router()
 
@@ -97,6 +98,21 @@ router.post('/rides/:id/messages', auth, (req, res) => {
     title: `New message on your ${ride.from_name} → ${ride.to_name} trip`,
     body,
     link: `/messages/${ride.id}`,
+  })
+
+  // Push to the recipient's live connections so chat is instant (no polling).
+  pushToUser(recipientId, {
+    event: 'message',
+    rideId: ride.id,
+    message: {
+      id: msg.id,
+      ride_id: ride.id,
+      sender_id: req.user.id,
+      sender_name: senderName,
+      recipient_id: recipientId,
+      body: msg.body,
+      created_at: msg.created_at,
+    },
   })
 
   res.json({ message: msg, you: senderName, other: otherUser?.name })

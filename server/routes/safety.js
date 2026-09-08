@@ -3,7 +3,9 @@ import crypto from 'node:crypto'
 import { db } from '../db.js'
 import { auth, requireAdmin } from './auth.js'
 import { sendMail } from '../mail.js'
+import { sendSms } from '../sms.js'
 import { meUser, isBlocked } from '../util.js'
+import { exportCsv } from '../backup.js'
 
 const router = Router()
 
@@ -12,8 +14,9 @@ function randomDigits(n) {
 }
 
 // ---------- Phone verification (OTP) ----------
-// In production the OTP would be sent via SMS; here we send it by email
-// (dev-mail) so the flow is testable end-to-end without an SMS gateway.
+// Sends the code by SMS in production (provider configured via SMS_*.env vars).
+// The email copy is kept as a delivery fallback and for dev-mail, so the flow
+// stays testable end-to-end without an SMS gateway.
 router.post('/phone/send-code', auth, (req, res) => {
   const phone = String(req.body?.phone || req.user.phone || '').trim()
   if (phone.length < 6) return res.status(400).json({ error: 'Enter a valid phone number' })
@@ -21,6 +24,8 @@ router.post('/phone/send-code', auth, (req, res) => {
   const code = randomDigits(6)
   const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString()
   db.prepare('INSERT INTO phone_verifications (user_id, code, expires_at) VALUES (?,?,?)').run(req.user.id, code, expires)
+
+  sendSms(phone, `RideMate: your phone verification code is ${code}. It expires in 10 minutes.`)
 
   sendMail({
     to: req.user.email,
@@ -31,6 +36,9 @@ router.post('/phone/send-code', auth, (req, res) => {
   res.json({ message: 'Verification code sent' })
 })
 
+// Max verification attempts per code before it's invalidated (brute-force guard).
+const OTP_MAX_ATTEMPTS = 5
+
 router.post('/phone/verify', auth, (req, res) => {
   const code = String(req.body?.code || '').trim()
   if (!code) return res.status(400).json({ error: 'Enter the code' })
@@ -38,7 +46,26 @@ router.post('/phone/verify', auth, (req, res) => {
   const row = db
     .prepare("SELECT * FROM phone_verifications WHERE user_id=? AND used=0 AND expires_at > datetime('now') ORDER BY id DESC LIMIT 1")
     .get(req.user.id)
-  if (!row || row.code !== code) return res.status(400).json({ error: 'Invalid or expired code' })
+  if (!row) return res.status(400).json({ error: 'Invalid or expired code' })
+
+  if (row.attempts >= OTP_MAX_ATTEMPTS) {
+    db.prepare('UPDATE phone_verifications SET used=1 WHERE id=?').run(row.id)
+    return res.status(400).json({ error: 'Too many attempts. Request a new code.' })
+  }
+
+  if (row.code !== code) {
+    const next = row.attempts + 1
+    // Consume the code on the final allowed attempt so it can't keep being spammed.
+    db.prepare(
+      next >= OTP_MAX_ATTEMPTS
+        ? 'UPDATE phone_verifications SET attempts=?, used=1 WHERE id=?'
+        : 'UPDATE phone_verifications SET attempts=? WHERE id=?'
+    ).run(next, row.id)
+    const message = next >= OTP_MAX_ATTEMPTS
+      ? 'Too many attempts. Request a new code.'
+      : 'Invalid or expired code'
+    return res.status(400).json({ error: message })
+  }
 
   db.prepare('UPDATE phone_verifications SET used=1 WHERE id=?').run(row.id)
   db.prepare('UPDATE users SET phone_verified=1 WHERE id=?').run(req.user.id)
@@ -152,6 +179,37 @@ router.post('/admin/reports/:id/action', auth, requireAdmin, (req, res) => {
   }
 
   res.json({ ok: true })
+})
+
+// ---------- Admin: dashboard stats ----------
+router.get('/admin/stats', auth, requireAdmin, (req, res) => {
+  const users = db.prepare('SELECT COUNT(*) AS c FROM users').get().c
+  const rides = db.prepare("SELECT COUNT(*) AS c FROM rides WHERE status='open'").get().c
+  const completed = db.prepare("SELECT COUNT(*) AS c FROM rides WHERE status='completed'").get().c
+  const openReports = db.prepare("SELECT COUNT(*) AS c FROM reports WHERE status='open'").get().c
+  const pendingVerify = db.prepare("SELECT COUNT(*) AS c FROM id_verifications WHERE status='pending'").get().c
+  const openSos = db.prepare("SELECT COUNT(*) AS c FROM sos_alerts WHERE status='open'").get().c
+  const captured = db.prepare("SELECT COALESCE(SUM(amount_paise),0) AS c FROM escrow_payments WHERE status='captured'").get().c
+  res.json({
+    stats: {
+      users, openRides: rides, completedRides: completed,
+      openReports, pendingVerify, openSos,
+      escrowHeld: Math.round(captured / 100),
+    },
+  })
+})
+
+// ---------- Admin: CSV export ----------
+router.get('/admin/export/:table', auth, requireAdmin, (req, res) => {
+  const table = req.params.table
+  const plans = {
+    users: ['id', 'name', 'email', 'phone', 'id_verified', 'credit_balance', 'created_at'],
+    rides: ['id', 'user_id', 'vehicle_type', 'from_name', 'to_name', 'depart_at', 'seats_total', 'price', 'status', 'created_at'],
+    payments: ['id', 'ride_id', 'payer_id', 'payee_id', 'amount_paise', 'currency', 'status', 'provider', 'created_at'],
+  }
+  const columns = plans[table]
+  if (!columns) return res.status(404).json({ error: 'Unknown export' })
+  res.type('text/csv').attachment(`${table}.csv`).send(exportCsv(table, columns))
 })
 
 export default router

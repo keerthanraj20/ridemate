@@ -80,18 +80,23 @@ describe('RideMate API', () => {
       assert.equal(res.status, 409)
     })
 
-    it('requires a password of at least 6 chars', async () => {
+    it('requires a password of at least 8 chars with mixed letters & numbers', async () => {
       const res = await request(app)
         .post('/api/auth/register')
         .send({ name: 'No', email: 'no@test.com', phone: '9876500003', password: '123' })
       assert.equal(res.status, 400)
+
+      const lettersOnly = await request(app)
+        .post('/api/auth/register')
+        .send({ name: 'No', email: 'nodig@test.com', phone: '9876500004', password: 'abcdefgh' })
+      assert.equal(lettersOnly.status, 400)
     })
 
     it('logs in with correct credentials', async () => {
-      await register({ email: 'login@test.com', password: 'rightpass' })
+      await register({ email: 'login@test.com', password: 'rightpass1' })
       const ok = await request(app)
         .post('/api/auth/login')
-        .send({ email: 'login@test.com', password: 'rightpass' })
+        .send({ email: 'login@test.com', password: 'rightpass1' })
       assert.equal(ok.status, 200)
       assert.ok(ok.body.token)
 
@@ -349,6 +354,19 @@ describe('RideMate API', () => {
       assert.equal(verify.body.user, undefined)
     })
 
+    it('locks the OTP after too many wrong attempts', async () => {
+      const { a } = await users()
+      await request(app).post('/api/phone/send-code').set(authHeaders(a)).send({ phone: '9876543210' })
+      for (let i = 0; i < 5; i++) {
+        const wrong = await request(app).post('/api/phone/verify').set(authHeaders(a)).send({ code: '000000' })
+        assert.equal(wrong.status, 400)
+      }
+      // the code is now consumed, so the *correct* code must also fail
+      const code = db.prepare("SELECT code FROM phone_verifications WHERE used=1 ORDER BY id DESC LIMIT 1").get().code
+      const verify = await request(app).post('/api/phone/verify').set(authHeaders(a)).send({ code })
+      assert.equal(verify.status, 400)
+    })
+
     it('allows reporting a user and blocks duplicate reports', async () => {
       const { a, b } = await users()
       const me = await request(app).get('/api/auth/me').set(authHeaders(b))
@@ -409,6 +427,463 @@ describe('RideMate API', () => {
       // suspended user can no longer act
       const suspended = await request(app).get('/api/auth/me').set(authHeaders(b))
       assert.equal(suspended.status, 403)
+    })
+  })
+
+  describe('payments / escrow', () => {
+    beforeEach(() => {
+      truncateAll(db)
+    })
+
+    async function setupAccepted({ seats = 1, price = 200 } = {}) {
+      const ownerRes = await register({ email: 'pay-owner@test.com' })
+      const ownerTok = ownerRes.token
+      const ride = (await offerRide(ownerTok, { seats_total: 2, price })).body.ride
+      const riderRes = await register({ email: 'pay-rider@test.com' })
+      const riderTok = riderRes.token
+      const reqRes = await request(app)
+        .post(`/api/rides/${ride.id}/request`)
+        .set(authHeaders(riderTok))
+        .send({ seats, message: 'Pay test' })
+      assert.equal(reqRes.status, 200)
+      const requestId = db
+        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
+        .get(ride.id, riderRes.user.id).id
+      const accept = await request(app)
+        .post(`/api/requests/${requestId}/accept`)
+        .set(authHeaders(ownerTok))
+      assert.equal(accept.status, 200)
+      return { ownerTok, riderTok, ride, requestId }
+    }
+
+    it('holds the fare in escrow after an accepted booking (mock, captured)', async () => {
+      const { riderTok, requestId, ride } = await setupAccepted({ seats: 1, price: 200 })
+      const res = await request(app)
+        .post('/api/payments/order')
+        .set(authHeaders(riderTok))
+        .send({ request_id: requestId })
+      assert.equal(res.status, 201)
+      assert.equal(res.body.payment.status, 'captured')
+      assert.equal(res.body.payment.amount, 200)
+      assert.equal(res.body.payment.provider, 'mock')
+      assert.equal(res.body.payment.ride_id, ride.id)
+      assert.equal(res.body.payment.role, 'payer')
+    })
+
+    it('rejects paying for a booking that is not accepted', async () => {
+      const { riderTok, requestId } = await setupAccepted()
+      // mark the request rejected out-of-band so it is no longer accepted
+      db.prepare("UPDATE requests SET status='rejected' WHERE id=?").run(requestId)
+      const res = await request(app)
+        .post('/api/payments/order')
+        .set(authHeaders(riderTok))
+        .send({ request_id: requestId })
+      assert.equal(res.status, 400)
+    })
+
+    it('is idempotent on a duplicate pay request', async () => {
+      const { riderTok, requestId } = await setupAccepted()
+      const first = await request(app)
+        .post('/api/payments/order')
+        .set(authHeaders(riderTok))
+        .send({ request_id: requestId })
+      assert.equal(first.status, 201)
+      const again = await request(app)
+        .post('/api/payments/order')
+        .set(authHeaders(riderTok))
+        .send({ request_id: requestId })
+      assert.equal(again.status, 200)
+      assert.equal(again.body.message, 'Booking already paid')
+    })
+
+    it('lists only the user’s own escrows with the correct side', async () => {
+      const { ownerTok, riderTok, requestId } = await setupAccepted()
+      await request(app)
+        .post('/api/payments/order')
+        .set(authHeaders(riderTok))
+        .send({ request_id: requestId })
+      const riderList = await request(app).get('/api/payments').set(authHeaders(riderTok))
+      assert.equal(riderList.status, 200)
+      assert.equal(riderList.body.payments.length, 1)
+      assert.equal(riderList.body.payments[0].role, 'payer')
+
+      const ownerList = await request(app).get('/api/payments').set(authHeaders(ownerTok))
+      assert.equal(ownerList.body.payments.length, 1)
+      assert.equal(ownerList.body.payments[0].role, 'payee')
+    })
+
+    it('lets the rider refund before the ride completes, and the owner cannot', async () => {
+      const { ownerTok, riderTok, requestId } = await setupAccepted()
+      const pay = await request(app)
+        .post('/api/payments/order')
+        .set(authHeaders(riderTok))
+        .send({ request_id: requestId })
+      const escrowId = pay.body.payment.id
+      assert.equal(pay.body.payment.status, 'captured')
+
+      // the ride owner cannot refund the rider’s money
+      const wrongRefund = await request(app)
+        .post(`/api/payments/${escrowId}/refund`)
+        .set(authHeaders(ownerTok))
+        .send({})
+      assert.equal(wrongRefund.status, 403)
+
+      const refund = await request(app)
+        .post(`/api/payments/${escrowId}/refund`)
+        .set(authHeaders(riderTok))
+        .send({})
+      assert.equal(refund.status, 200)
+
+      const list = await request(app).get('/api/payments').set(authHeaders(riderTok))
+      assert.equal(list.body.payments[0].status, 'refunded')
+    })
+
+    it('does not release to the owner until the ride is completed', async () => {
+      const { ownerTok, riderTok, requestId } = await setupAccepted()
+      const pay = await request(app)
+        .post('/api/payments/order')
+        .set(authHeaders(riderTok))
+        .send({ request_id: requestId })
+      const escrowId = pay.body.payment.id
+
+      const early = await request(app)
+        .post(`/api/payments/${escrowId}/release`)
+        .set(authHeaders(ownerTok))
+        .send({})
+      assert.equal(early.status, 400)
+
+      const complete = await request(app)
+        .post(`/api/rides/${pay.body.payment.ride_id}/complete`)
+        .set(authHeaders(ownerTok))
+      assert.equal(complete.status, 200)
+
+      const release = await request(app)
+        .post(`/api/payments/${escrowId}/release`)
+        .set(authHeaders(ownerTok))
+        .send({})
+      assert.equal(release.status, 200)
+
+      const list = await request(app).get('/api/payments').set(authHeaders(ownerTok))
+      assert.equal(list.body.payments[0].status, 'released')
+    })
+  })
+
+  describe('growth (referrals, follows, leaderboard)', () => {
+    beforeEach(() => {
+      truncateAll(db)
+    })
+
+    async function acceptedRide(tokens) {
+      const make = await offerRide(tokens.ownerTok)
+      assert.equal(make.status, 200, JSON.stringify(make.body))
+      const ride = make.body.ride
+      const reqRes = await request(app)
+        .post(`/api/rides/${ride.id}/request`)
+        .set(authHeaders(tokens.riderTok))
+        .send({ seats: 1, message: 'growth test' })
+      assert.equal(reqRes.status, 200)
+      const requestId = db
+        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
+        .get(ride.id, tokens.rider.id).id
+      await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(tokens.ownerTok))
+      return { ride, requestId }
+    }
+
+    it('assigns every new user a referral code', async () => {
+      const { user } = await register({ name: 'Code Guy', email: 'codeguy@test.com' })
+      assert.ok(user.referral_code && user.referral_code.length >= 6)
+    })
+
+    it('redeems a code and credits both users exactly once', async () => {
+      const a = await register({ name: 'Referrer', email: 'refa@test.com' })
+      const b = await register({ name: 'Recruit', email: 'refb@test.com' })
+
+      const mine = await request(app).get('/api/referral').set(authHeaders(a.token))
+      assert.equal(mine.status, 200)
+      const code = mine.body.code
+
+      const redeem = await request(app)
+        .post('/api/referral/redeem')
+        .set(authHeaders(b.token))
+        .send({ code })
+      assert.equal(redeem.status, 200)
+
+      const aStats = await request(app).get('/api/me/stats').set(authHeaders(a.token))
+      assert.equal(aStats.body.credit, 50)
+      const bStats = await request(app).get('/api/me/stats').set(authHeaders(b.token))
+      assert.equal(bStats.body.credit, 50)
+
+      const again = await request(app)
+        .post('/api/referral/redeem')
+        .set(authHeaders(b.token))
+        .send({ code })
+      assert.equal(again.status, 400)
+
+      const selfRef = await request(app)
+        .post('/api/referral/redeem')
+        .set(authHeaders(a.token))
+        .send({ code })
+      assert.equal(selfRef.status, 400)
+    })
+
+    it('notifies followers when a favorite owner posts a ride', async () => {
+      const owner = await register({ name: 'Star Owner', email: 'star@test.com' })
+      const fan = await register({ name: 'Fan', email: 'fan@test.com' })
+      const follow = await request(app)
+        .post(`/api/users/${owner.user.id}/follow`)
+        .set(authHeaders(fan.token))
+      assert.equal(follow.status, 200)
+
+      await offerRide(owner.token)
+      const row = db
+        .prepare('SELECT COUNT(*) AS c FROM notifications WHERE user_id=?')
+        .get(fan.user.id)
+      assert.equal(row.c, 1)
+
+      const list = await request(app)
+        .get('/api/users/1/following')
+        .set(authHeaders(fan.token))
+      assert.ok(list.body.following.some((u) => u.id === owner.user.id))
+    })
+
+    it('leaderboard and stats include rides offered and joined', async () => {
+      const owner = await register({ name: 'Busy Owner', email: 'busy@test.com' })
+      const rider = await register({ name: 'Frequent Rider', email: 'freq@test.com' })
+      const ownerTok = owner.token
+      const riderTok = rider.token
+      const { ride } = await acceptedRide({ ownerTok, riderTok, rider: rider.user })
+      await request(app).post(`/api/rides/${ride.id}/complete`).set(authHeaders(ownerTok))
+
+      const board = await request(app).get('/api/leaderboard?period=all')
+      assert.equal(board.status, 200)
+      assert.ok(board.body.leaderboard.some((e) => e.id === owner.user.id && e.completed >= 1))
+      assert.ok(board.body.leaderboard.some((e) => e.id === rider.user.id && e.completed >= 1))
+
+      const ownerStats = await request(app).get('/api/me/stats').set(authHeaders(ownerTok))
+      assert.equal(ownerStats.body.completed, 1)
+      const riderStats = await request(app).get('/api/me/stats').set(authHeaders(riderTok))
+      assert.equal(riderStats.body.completed, 1)
+    })
+  })
+
+  describe('trips + safety (live tracking, SOS)', () => {
+    beforeEach(() => {
+      truncateAll(db)
+    })
+
+    async function setupTripper() {
+      const owner = await register({ email: 'trip-owner@test.com' })
+      const rider = await register({ email: 'trip-rider@test.com' })
+      const ownerTok = owner.token
+      const riderTok = rider.token
+      const ride = (await offerRide(ownerTok, { seats_total: 2 })).body.ride
+      const reqRes = await request(app)
+        .post(`/api/rides/${ride.id}/request`)
+        .set(authHeaders(riderTok))
+        .send({ seats: 1 })
+      const requestId = db
+        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
+        .get(ride.id, rider.user.id).id
+      await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(ownerTok))
+      return { ownerTok, riderTok, ride }
+    }
+
+    it('lets a participant share live location and keeps outsiders out', async () => {
+      const { riderTok, ride } = await setupTripper()
+      const stranger = await register({ email: 'outsider@test.com' })
+
+      const start = await request(app)
+        .post('/api/trips/start')
+        .set(authHeaders(riderTok))
+        .send({ ride_id: ride.id })
+      assert.equal(start.status, 200)
+      const tripId = start.body.trip.id
+
+      const loc = await request(app)
+        .post(`/api/trips/${tripId}/location`)
+        .set(authHeaders(riderTok))
+        .send({ lat: 13.1, lng: 80.3 })
+      assert.equal(loc.status, 200)
+
+      const live = await request(app)
+        .get(`/api/trips/ride/${ride.id}`)
+        .set(authHeaders(riderTok))
+      assert.equal(live.body.locations.length, 1)
+      assert.ok(live.body.locations[0].lat !== null)
+
+      const forbidden = await request(app)
+        .get(`/api/trips/ride/${ride.id}`)
+        .set(authHeaders(stranger.token))
+      assert.equal(forbidden.status, 403)
+    })
+
+    it('raises SOS and lets an admin close it', async () => {
+      const user = await register({ email: 'sos-user@test.com' })
+      const alarm = await request(app)
+        .post('/api/safety/sos')
+        .set(authHeaders(user.token))
+        .send({ lat: 12.9, lng: 80.1, message: 'emergency!' })
+      assert.equal(alarm.status, 200)
+
+      // promote a second account to admin and a non-admin is rejected
+      const sosRow = db.prepare('SELECT id FROM sos_alerts ORDER BY id DESC LIMIT 1').get()
+      const admin = await register({ email: 'sos-admin@test.com' })
+      db.prepare('UPDATE users SET is_admin=1 WHERE id=?').run(admin.user.id)
+
+      const denied = await request(app).get('/api/admin/sos').set(authHeaders(user.token))
+      assert.equal(denied.status, 403)
+
+      const queue = await request(app).get('/api/admin/sos').set(authHeaders(admin.token))
+      assert.equal(queue.status, 200)
+      assert.equal(queue.body.alerts[0].status, 'open')
+
+      const close = await request(app)
+        .post(`/api/admin/sos/${sosRow.id}/close`)
+        .set(authHeaders(admin.token))
+      assert.equal(close.status, 200)
+      assert.equal(db.prepare('SELECT status FROM sos_alerts WHERE id=?').get(sosRow.id).status, 'closed')
+    })
+  })
+
+  describe('id verification', () => {
+    beforeEach(() => {
+      truncateAll(db)
+    })
+
+    const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+
+    it('submits a doc, enqueues for review, and admin approves it', async () => {
+      const user = await register({ email: 'verify-user@test.com' })
+      const admin = await register({ email: 'verify-admin@test.com' })
+      db.prepare('UPDATE users SET is_admin=1 WHERE id=?').run(admin.user.id)
+
+      const badMime = await request(app)
+        .post('/api/verifications')
+        .set(authHeaders(user.token))
+        .send({ doc_type: 'aadhaar', doc_image: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' })
+      assert.equal(badMime.status, 400)
+
+      const submit = await request(app)
+        .post('/api/verifications')
+        .set(authHeaders(user.token))
+        .send({ doc_type: 'aadhaar', doc_image: PNG })
+      assert.equal(submit.status, 201)
+
+      const dup = await request(app)
+        .post('/api/verifications')
+        .set(authHeaders(user.token))
+        .send({ doc_type: 'driving_license', doc_image: PNG })
+      assert.equal(dup.status, 400)
+
+      const queue = await request(app)
+        .get('/api/admin/verifications')
+        .set(authHeaders(admin.token))
+      assert.equal(queue.body.verifications.length, 1)
+      assert.equal(queue.body.verifications[0].status, 'pending')
+
+      const approve = await request(app)
+        .post(`/api/admin/verifications/${queue.body.verifications[0].id}/action`)
+        .set(authHeaders(admin.token))
+        .send({ action: 'approve' })
+      assert.equal(approve.status, 200)
+
+      const me = await request(app).get('/api/auth/me').set(authHeaders(user.token))
+      assert.equal(me.body.user.id_verified, 1)
+    })
+  })
+
+  describe('rides v2 (detail, round trip, cancel reason, filters)', () => {
+    beforeEach(() => {
+      truncateAll(db)
+    })
+
+    it('returns ride detail with owner, seats, and my request status', async () => {
+      const owner = await register({ email: 'detail-owner@test.com' })
+      const rider = await register({ email: 'detail-rider@test.com' })
+      const ride = (await offerRide(owner.token, { seats_total: 2 })).body.ride
+      await request(app)
+        .post(`/api/rides/${ride.id}/request`)
+        .set(authHeaders(rider.token))
+        .send({ seats: 1 })
+      const requestId = db
+        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
+        .get(ride.id, rider.user.id).id
+      await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(owner.token))
+
+      const detail = await request(app)
+        .get(`/api/rides/${ride.id}`)
+        .set(authHeaders(rider.token))
+      assert.equal(detail.status, 200)
+      assert.equal(detail.body.owner.name, 'Test User')
+      assert.equal(detail.body.ride.seats_taken, 1)
+      assert.equal(detail.body.ride.seats_left, 1)
+      assert.equal(detail.body.my_request.status, 'accepted')
+      assert.equal(detail.body.is_participant, true)
+
+      const notFound = await request(app).get('/api/rides/999999')
+      assert.equal(notFound.status, 404)
+    })
+
+    it('creates a return leg when return_depart_at is provided', async () => {
+      const owner = await register({ email: 'roundtrip@test.com' })
+      const res = await offerRide(owner.token, {
+        from_name: 'Chennai', to_name: 'Pondicherry',
+        return_depart_at: new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString(),
+      })
+      assert.equal(res.status, 200)
+      assert.ok(res.body.returnRide)
+      assert.equal(res.body.returnRide.to_name, 'Chennai')
+      assert.equal(res.body.returnRide.from_name, 'Pondicherry')
+    })
+
+    it('records the cancel reason on rider and owner cancellations', async () => {
+      const owner = await register({ email: 'cancel-owner@test.com' })
+      const rider = await register({ email: 'cancel-rider@test.com' })
+      const ride = (await offerRide(owner.token, { seats_total: 2 })).body.ride
+      await request(app)
+        .post(`/api/rides/${ride.id}/request`)
+        .set(authHeaders(rider.token))
+        .send({ seats: 1 })
+      const requestId = db
+        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
+        .get(ride.id, rider.user.id).id
+      await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(owner.token))
+
+      const riderCancel = await request(app)
+        .post(`/api/requests/${requestId}/cancel`)
+        .set(authHeaders(rider.token))
+        .send({ reason: 'Plans changed' })
+      assert.equal(riderCancel.status, 200)
+      assert.equal(db.prepare('SELECT cancel_reason FROM requests WHERE id=?').get(requestId).cancel_reason, 'Plans changed')
+
+      const rideCancel = await request(app)
+        .post(`/api/rides/${ride.id}/cancel`)
+        .set(authHeaders(owner.token))
+        .send({ reason: 'Vehicle broke down' })
+      assert.equal(rideCancel.status, 200)
+      assert.equal(db.prepare('SELECT cancel_reason FROM rides WHERE id=?').get(ride.id).cancel_reason, 'Vehicle broke down')
+    })
+
+    it('excludes rides without enough free seats for the requested count', async () => {
+      const owner = await register({ email: 'filter-owner@test.com' })
+      const rider = await register({ email: 'filter-rider@test.com' })
+      const ride = (await offerRide(owner.token, { seats_total: 3 })).body.ride
+      await request(app)
+        .post(`/api/rides/${ride.id}/request`)
+        .set(authHeaders(rider.token))
+        .send({ seats: 2 })
+      const requestId = db
+        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
+        .get(ride.id, rider.user.id).id
+      await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(owner.token))
+
+      const need3 = await request(app).get('/api/rides/search?min_seats=3').set(authHeaders(rider.token))
+      assert.equal(need3.status, 200, JSON.stringify(need3.body))
+      assert.ok(!need3.body.results.some((r) => r.id === ride.id))
+
+      const need1 = await request(app).get('/api/rides/search?min_seats=1').set(authHeaders(rider.token))
+      assert.equal(need1.status, 200, JSON.stringify(need1.body))
+      assert.ok(need1.body.results.some((r) => r.id === ride.id))
     })
   })
 })

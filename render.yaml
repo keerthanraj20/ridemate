@@ -13,7 +13,17 @@ services:
         value: production
       - key: PORT
         value: 4000
+      - key: RM_TRUST_PROXY
+        value: "1"
+      - key: RM_BACKUP_DIR
+        value: server/backups
       - key: CLIENT_URL
         value: https://ridemate-w9wj.onrender.com
       - key: CORS_ORIGINS
         value: https://ridemate-w9wj.onrender.com
+      - key: GEOCODER
+        value: nominatim
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: MAPMYINDIA_API_KEY
+        sync: false

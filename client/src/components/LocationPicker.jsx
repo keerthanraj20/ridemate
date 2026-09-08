@@ -31,10 +31,16 @@ export default function LocationPicker({ label, hint, value, onChange }) {
     setBusy(true)
     try {
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query.trim())}`,
-        { headers: { 'Accept-Language': 'en' }, signal: ctrl.signal }
+        `/api/geocode?q=${encodeURIComponent(query.trim())}&limit=5`,
+        { signal: ctrl.signal }
       )
-      setResults(await res.json())
+      const data = await res.json()
+      setResults((data?.results || []).map(r => ({
+        ...r,
+        lat: String(r.lat),
+        lon: String(r.lng),
+        display_name: r.name || r.display_name || '',
+      })))
     } catch (err) {
       if (err.name !== 'AbortError') setResults([])
     } finally {

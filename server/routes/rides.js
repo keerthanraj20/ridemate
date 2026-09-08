@@ -1,13 +1,16 @@
 import { Router } from 'express'
 import jwt from 'jsonwebtoken'
 import { db } from '../db.js'
-import { distanceKm, isBlocked } from '../util.js'
+import { distanceKm, isBlocked, publicUser } from '../util.js'
 import { auth } from './auth.js'
 import { notify } from '../notify.js'
+import { refundEscrowForRequest, refundEscrowForRide, autoReleaseForRide } from '../payments.js'
 
 const router = Router()
 export const VEHICLES = ['bike', 'car', 'auto', 'van', 'other']
 export const REPEAT = ['none', 'daily', 'weekly', 'weekdays']
+const VEHICLE_LABEL = { bike: 'bike', car: 'car', auto: 'auto-rickshaw', van: 'van', other: 'vehicle' }
+const vehicleName = (t) => VEHICLE_LABEL[t] || 'vehicle'
 
 // ---------- helpers ----------
 const seatsTaken = (rideId) =>
@@ -19,18 +22,6 @@ function refreshStatus(rideId) {
   if (!ride || ride.status === 'cancelled') return
   const status = seatsTaken(rideId) >= ride.seats_total ? 'full' : 'open'
   db.prepare('UPDATE rides SET status=? WHERE id=?').run(status, rideId)
-}
-
-// attach "my_status" (viewer's existing request) to each ride
-function withMyStatus(rows, userId) {
-  if (!userId || rows.length === 0) return rows.map((r) => ({ ...r, my_status: null }))
-  const map = new Map(
-    db
-      .prepare("SELECT ride_id, status FROM requests WHERE rider_id=? AND status IN ('pending','accepted')")
-      .all(userId)
-      .map((x) => [x.ride_id, x.status])
-  )
-  return rows.map((r) => ({ ...r, my_status: map.get(r.id) || null }))
 }
 
 // ---------- create a ride (vehicle owner) ----------
@@ -79,7 +70,51 @@ router.post('/rides', auth, (req, res) => {
       repeat
     )
 
-  res.json({ ride: db.prepare('SELECT * FROM rides WHERE id=?').get(Number(info.lastInsertRowid)) })
+  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(info.lastInsertRowid))
+
+  // Notify followers that this owner posted a new ride.
+  const followers = db
+    .prepare("SELECT follower_id FROM owner_follows WHERE followee_id=?").all(req.user.id)
+  for (const f of followers) {
+    notify(f.follower_id, {
+      type: 'ride',
+      title: `${req.user.name} shared a new ${vehicleName} ride`,
+      body: `${b.from_name.trim()} → ${b.to_name.trim()} · ${seats} seat(s) · ₹${price}`,
+      link: `/rides/${ride.id}`,
+    })
+  }
+
+  // Optional round trip: auto-create the return leg (reverse route).
+  if (b.return_depart_at) {
+    const returnDepart = new Date(b.return_depart_at)
+    if (!Number.isNaN(returnDepart.getTime()) && returnDepart.getTime() > Date.now() - 60_000) {
+      const ret = db
+        .prepare(
+          `INSERT INTO rides
+           (user_id,vehicle_type,vehicle_model,from_name,from_lat,from_lng,to_name,to_lat,to_lng,depart_at,seats_total,price,notes,repeat_every)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          req.user.id,
+          b.vehicle_type,
+          String(b.vehicle_model || '').trim().slice(0, 60),
+          b.to_name.trim().slice(0, 100),
+          num(b.to_lat),
+          num(b.to_lng),
+          b.from_name.trim().slice(0, 100),
+          num(b.from_lat),
+          num(b.from_lng),
+          returnDepart.toISOString(),
+          seats,
+          price,
+          (String(b.notes || '').trim() + ' · return leg').slice(0, 300),
+          repeat
+        )
+      return res.json({ ride, returnRide: db.prepare('SELECT * FROM rides WHERE id=?').get(Number(ret.lastInsertRowid)) })
+    }
+  }
+
+  res.json({ ride })
 })
 
 // ---------- search / browse rides ----------
@@ -90,52 +125,127 @@ router.get('/rides/search', (req, res) => {
   const PAGE_SIZE = Math.min(100, Math.max(1, Number(req.query.page_size) || 50))
   const page = Math.max(1, Number(req.query.page) || 1)
 
-  let rows = db
-    .prepare(
-      `SELECT r.*, u.name AS owner_name, u.phone AS owner_phone, u.bio AS owner_bio, u.email_verified AS owner_verified FROM rides r JOIN users u ON u.id=r.user_id
-       WHERE r.status='open' AND r.depart_at >= datetime('now','-30 minutes')
-       ORDER BY r.depart_at ASC LIMIT 200`
-    )
-    .all()
-
-  if (req.query.date) rows = rows.filter((r) => r.depart_at.slice(0, 10) === String(req.query.date))
-
-  // filters
-  if (req.query.vehicle) rows = rows.filter((r) => r.vehicle_type === String(req.query.vehicle))
-  if (req.query.max_price !== undefined && req.query.max_price !== '') {
-    const mp = Number(req.query.max_price)
-    if (Number.isFinite(mp)) rows = rows.filter((r) => r.price <= mp)
-  }
-  if (req.query.repeat && req.query.repeat !== '') {
-    rows = rows.filter((r) => r.repeat_every === String(req.query.repeat))
-  }
-
-  // one aggregate query for all rides instead of a COUNT per ride (avoids N+1)
-  const takenMap = new Map(
-    db
-      .prepare("SELECT ride_id, COALESCE(SUM(seats),0) AS s FROM requests WHERE status='accepted' GROUP BY ride_id")
-      .all()
-      .map((x) => [x.ride_id, x.s])
-  )
-  rows = rows.filter((r) => (takenMap.get(r.id) || 0) < r.seats_total)
-  if (viewer) rows = rows.filter((r) => r.user_id !== viewer.id)
-
   const fLat = Number.parseFloat(req.query.from_lat)
   const fLng = Number.parseFloat(req.query.from_lng)
   const tLat = Number.parseFloat(req.query.to_lat)
   const tLng = Number.parseFloat(req.query.to_lng)
   const hasPoints = [fLat, fLng, tLat, tLng].every(Number.isFinite)
 
-  rows = rows.map((r) => ({ ...r, seats_taken: takenMap.get(r.id) || 0 }))
+  // Approximate km-to-degree conversion for bounding box (at India latitudes ~1° ≈ 111km)
+  const KM_TO_DEG = 1 / 111
+  const RADIUS_KM = 15
 
-  // trim owner contact if viewer isn't an accepted participant yet (privacy)
-  rows = rows.map((r) => {
-    const { owner_phone, ...rest } = r
-    void owner_phone
-    return rest
-  })
+  // Build WHERE conditions dynamically for indexed queries
+  const conditions = ["r.status = 'open'", "r.depart_at >= datetime('now', '-30 minutes')"]
+  const params = []
 
-  // one aggregate query for owner trust scores
+  // Bounding box pre-filter on FROM coordinates (uses idx_rides_from_coords)
+  if (hasPoints) {
+    const latDelta = RADIUS_KM * KM_TO_DEG
+    const lngDelta = RADIUS_KM * KM_TO_DEG / Math.cos((fLat * Math.PI) / 180)
+    conditions.push('r.from_lat BETWEEN ? AND ?')
+    params.push(fLat - latDelta, fLat + latDelta)
+    conditions.push('r.from_lng BETWEEN ? AND ?')
+    params.push(fLng - lngDelta, fLng + lngDelta)
+  }
+
+  // Bounding box on TO coordinates (uses idx_rides_to_coords) — a 15km radius
+  // is always inside a ±15km lat/lng box, so this is a safe superset.
+  if (hasPoints) {
+    const latDelta = RADIUS_KM * KM_TO_DEG
+    const lngDelta = RADIUS_KM * KM_TO_DEG / Math.cos((tLat * Math.PI) / 180)
+    conditions.push('r.to_lat BETWEEN ? AND ?')
+    params.push(tLat - latDelta, tLat + latDelta)
+    conditions.push('r.to_lng BETWEEN ? AND ?')
+    params.push(tLng - lngDelta, tLng + lngDelta)
+  }
+
+  // SQL-level filters (avoids fetching then discarding in JS)
+  if (req.query.date) {
+    conditions.push("date(r.depart_at) = ?")
+    params.push(String(req.query.date))
+  }
+  if (req.query.vehicle) {
+    conditions.push('r.vehicle_type = ?')
+    params.push(String(req.query.vehicle))
+  }
+  if (req.query.max_price !== undefined && req.query.max_price !== '') {
+    const mp = Number(req.query.max_price)
+    if (Number.isFinite(mp)) {
+      conditions.push('r.price <= ?')
+      params.push(mp)
+    }
+  }
+  if (req.query.repeat && req.query.repeat !== '') {
+    conditions.push('r.repeat_every = ?')
+    params.push(String(req.query.repeat))
+  }
+
+  // Time-of-day window (compared in UTC)
+  const fromHr = req.query.from_hr !== undefined && req.query.from_hr !== ''
+    ? Math.max(0, Math.min(23, Math.floor(Number(req.query.from_hr))))
+    : null
+  const toHr = req.query.to_hr !== undefined && req.query.to_hr !== ''
+    ? Math.max(0, Math.min(23, Math.floor(Number(req.query.to_hr))))
+    : null
+  if (fromHr !== null) {
+    conditions.push("cast(strftime('%H', r.depart_at) as integer) >= ?")
+    params.push(fromHr)
+  }
+  if (toHr !== null) {
+    conditions.push("cast(strftime('%H', r.depart_at) as integer) <= ?")
+    params.push(toHr)
+  }
+
+  const whereClause = conditions.join(' AND ')
+
+  // One query: rides + seat availability (avoids separate N+1 seat queries)
+  let sql = `
+    SELECT r.*,
+           u.name AS owner_name, u.phone AS owner_phone, u.bio AS owner_bio,
+           u.email_verified AS owner_verified, u.id_verified AS owner_id_verified,
+           COALESCE(taken.s, 0) AS seats_taken
+    FROM rides r
+    JOIN users u ON u.id = r.user_id
+    LEFT JOIN (
+      SELECT ride_id, SUM(seats) AS s FROM requests WHERE status='accepted' GROUP BY ride_id
+    ) taken ON taken.ride_id = r.id
+    WHERE ${whereClause}
+      AND (COALESCE(taken.s, 0) < r.seats_total)`
+
+  // Exclude own rides
+  if (viewer) {
+    sql += ' AND r.user_id != ?'
+    params.push(viewer.id)
+  }
+
+  // Min seats filter
+  const minSeats = Number.isFinite(Number(req.query.min_seats))
+    ? Math.max(1, Math.floor(Number(req.query.min_seats)))
+    : null
+  if (minSeats) {
+    sql += ' AND (COALESCE(taken.s, 0) + ? <= r.seats_total)'
+    params.push(minSeats)
+  }
+
+  // Order by departure (indexed) — fetch a generous set for proximity sorting
+  sql += ' ORDER BY r.depart_at ASC LIMIT ?'
+  params.push(hasPoints ? 500 : 200)
+
+  let rows = db.prepare(sql).all(...params)
+
+  // Attach my_status (viewer's existing request)
+  if (viewer) {
+    const myRequests = db
+      .prepare("SELECT ride_id, status FROM requests WHERE rider_id=? AND status IN ('pending','accepted')")
+      .all(viewer.id)
+    const myMap = new Map(myRequests.map((x) => [x.ride_id, x.status]))
+    rows = rows.map((r) => ({ ...r, my_status: myMap.get(r.id) || null }))
+  } else {
+    rows = rows.map((r) => ({ ...r, my_status: null }))
+  }
+
+  // Owner trust scores (batched)
   const ownerIds = [...new Set(rows.map((r) => r.user_id))]
   let ownerStats = new Map()
   if (ownerIds.length > 0) {
@@ -153,21 +263,29 @@ router.get('/rides/search', (req, res) => {
     owner_rating: ownerStats.get(r.user_id)?.avg_rating || null,
     owner_ratings_count: ownerStats.get(r.user_id)?.total_ratings || 0,
     owner_verified: r.email_verified ? 1 : 0,
+    owner_id_verified: r.id_verified ? 1 : 0,
   }))
+
+  // Trim owner contact (privacy — only revealed after acceptance)
+  rows = rows.map((r) => {
+    const { owner_phone, ...rest } = r
+    void owner_phone
+    return rest
+  })
 
   let results
   if (hasPoints) {
-    // proximity match: trip starts near my start, ends near my destination
+    // Haversine distance filtering + sort by combined proximity
     results = rows
       .map((r) => {
         const dStart = distanceKm(fLat, fLng, r.from_lat, r.from_lng)
         const dEnd = distanceKm(tLat, tLng, r.to_lat, r.to_lng)
         return { ...r, dist_start: Math.round(dStart * 10) / 10, dist_end: Math.round(dEnd * 10) / 10 }
       })
-      .filter((r) => r.dist_start <= 15 && r.dist_end <= 15)
+      .filter((r) => r.dist_start <= RADIUS_KM && r.dist_end <= RADIUS_KM)
       .sort((a, b) => a.dist_start + a.dist_end - (b.dist_start + b.dist_end))
   } else {
-    // text-only fallback (or plain browse when no filters given)
+    // Text-only fallback (or plain browse when no filters given)
     const ft = String(req.query.from_text || '').toLowerCase().trim()
     const tt = String(req.query.to_text || '').toLowerCase().trim()
     results = rows.filter(
@@ -178,7 +296,7 @@ router.get('/rides/search', (req, res) => {
   const total = results.length
   const slice = results.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
   res.json({
-    results: withMyStatus(slice, viewer?.id),
+    results: slice,
     page,
     pageSize: PAGE_SIZE,
     total,
@@ -389,30 +507,39 @@ for (const action of ['accept', 'reject']) {
 }
 
 // ---------- cancel my booking (traveler) ----------
-router.post('/requests/:id/cancel', auth, (req, res) => {
+router.post('/requests/:id/cancel', auth, async (req, res) => {
   const row = db.prepare('SELECT * FROM requests WHERE id=?').get(Number(req.params.id))
   if (!row) return res.status(404).json({ error: 'Request not found' })
   if (row.rider_id !== req.user.id) return res.status(403).json({ error: 'Not your request' })
   if (row.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' })
 
-  db.prepare("UPDATE requests SET status='cancelled' WHERE id=?").run(row.id)
+  const reason = String(req.body?.reason || '').trim().slice(0, 200)
+  db.prepare("UPDATE requests SET status='cancelled', cancel_reason=? WHERE id=?").run(reason || null, row.id)
   refreshStatus(row.ride_id)
+  try {
+    await refundEscrowForRequest(row.id)
+  } catch (err) {
+    // Refund failed at the gateway (e.g. already refunded) — don't block the
+    // cancellation, but surface it so admins can reconcile.
+    console.error(`Refund failed for request ${row.id}:`, err?.message || err)
+  }
 
   const yourName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
   const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(row.ride_id)
   const wasAccepted = row.status === 'accepted'
+  const reasonSuffix = reason ? ` Reason: ${reason}` : ''
   if (wasAccepted) {
     notify(ride.user_id, {
       type: 'cancel',
       title: `${yourName} cancelled their seat`,
-      body: `${yourName} cancelled on your ${ride.from_name} → ${ride.to_name} trip.`,
+      body: `${yourName} cancelled on your ${ride.from_name} → ${ride.to_name} trip.${reasonSuffix}`,
       link: '/my-rides',
     })
   } else {
     notify(ride.user_id, {
       type: 'cancel',
       title: `${yourName} withdrew a request`,
-      body: `${yourName} withdrew their request for your ${ride.from_name} → ${ride.to_name} trip.`,
+      body: `${yourName} withdrew their request for your ${ride.from_name} → ${ride.to_name} trip.${reasonSuffix}`,
       link: '/my-rides',
     })
   }
@@ -429,21 +556,28 @@ router.post('/rides/:id/complete', auth, (req, res) => {
   if (ride.status === 'completed') return res.status(400).json({ error: 'Already marked as completed' })
 
   db.prepare("UPDATE rides SET status='completed' WHERE id=?").run(ride.id)
+  autoReleaseForRide(ride.id)
   res.json({ ok: true, message: 'Ride marked as completed.' })
 })
 
 // ---------- cancel a ride (owner, before departure) ----------
-router.post('/rides/:id/cancel', auth, (req, res) => {
+router.post('/rides/:id/cancel', auth, async (req, res) => {
   const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
   if (ride.user_id !== req.user.id) return res.status(403).json({ error: 'Only the ride owner can cancel this' })
   if (ride.status === 'cancelled') return res.status(400).json({ error: 'Ride already cancelled' })
   if (ride.status === 'completed') return res.status(400).json({ error: 'Ride already completed' })
 
-  db.prepare("UPDATE rides SET status='cancelled' WHERE id=?").run(ride.id)
+  const reason = String(req.body?.reason || '').trim().slice(0, 200)
+  db.prepare("UPDATE rides SET status='cancelled', cancel_reason=? WHERE id=?").run(reason || null, ride.id)
   db.prepare(
     "UPDATE requests SET status='cancelled' WHERE ride_id=? AND status IN ('pending','accepted')"
   ).run(ride.id)
+  try {
+    await refundEscrowForRide(ride.id)
+  } catch (err) {
+    console.error(`Refund failed on ride cancel ${ride.id}:`, err?.message || err)
+  }
 
   // notify every accepted / pending rider
   const yourName = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name
@@ -593,7 +727,7 @@ router.get('/rides/history', auth, (req, res) => {
   })
 })
 
-// tiny helper: verify token but never throw (used for optional auth on search)
+// small helper: verify token but never throw (used for optional auth on search)
 function tryAuth(req) {
   try {
     return jwt.verify(String(req.headers.authorization).slice(7), process.env.JWT_SECRET)
@@ -601,5 +735,57 @@ function tryAuth(req) {
     return null
   }
 }
+
+// ---------- ride detail (public) ----------
+router.get('/rides/:id', (req, res) => {
+  const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
+  if (!ride) return res.status(404).json({ error: 'Ride not found' })
+
+  const owner = db.prepare('SELECT * FROM users WHERE id=?').get(ride.user_id)
+  const taken = db
+    .prepare("SELECT COALESCE(SUM(seats),0) AS s FROM requests WHERE ride_id=? AND status='accepted'")
+    .get(ride.id).s
+  const stats = db
+    .prepare('SELECT ROUND(AVG(stars),1) AS avg_rating, COUNT(*) AS total_ratings FROM ratings WHERE to_user_id=?')
+    .get(ride.user_id)
+
+  const viewer = req.headers.authorization ? tryAuth(req) : null
+  let my_request = null
+  let is_participant = false
+  if (viewer) {
+    my_request = db
+      .prepare("SELECT id, seats, status FROM requests WHERE ride_id=? AND rider_id=?")
+      .get(ride.id, viewer.id) || null
+    is_participant = ride.user_id === viewer.id || Boolean(my_request && my_request.status === 'accepted')
+  }
+
+  // accepted riders are visible (names only) so owners/rider can recognize group
+  const acceptedRiders = db
+    .prepare(
+      `SELECT q.rider_id, u.name, u.avatar, u.id_verified FROM requests q
+       JOIN users u ON u.id=q.rider_id
+       WHERE q.ride_id=? AND q.status='accepted'
+       ORDER BY q.created_at ASC`
+    )
+    .all(ride.id)
+
+  res.json({
+    ride: {
+      ...ride,
+      seats_taken: taken,
+      seats_left: ride.seats_total - taken,
+      repeat_label: ride.repeat_every === 'none' ? null : ride.repeat_every,
+    },
+    owner: publicUser(owner),
+    owner_rating: stats.avg_rating,
+    owner_ratings_count: stats.total_ratings,
+    acceptedRiders: is_participant || viewer === null
+      ? acceptedRiders
+      : acceptedRiders.map((r) => ({ rider_id: r.rider_id, name: r.name.slice(0, 1) + '***' })),
+    my_request,
+    is_participant,
+    is_owner: viewer ? ride.user_id === viewer.id : false,
+  })
+})
 
 export default router

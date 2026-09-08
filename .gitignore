@@ -8,6 +8,9 @@ client/dist/
 # Database
 *.db
 *.db.bak-*
+*.db-wal
+*.db-shm
+server/backups/
 
 # Env
 .env

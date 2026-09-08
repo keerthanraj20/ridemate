@@ -1,193 +1,603 @@
 import Database from 'better-sqlite3'
+import pg from 'pg'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DB_PATH = process.env.RM_DB_PATH || path.join(__dirname, 'ridemate.db')
-export const db = new Database(DB_PATH)
-db.pragma('foreign_keys = ON')
 
-db.exec(`
+// Determine which database to use
+const USE_POSTGRES = Boolean(process.env.DATABASE_URL)
+const DB_PATH = process.env.RM_DB_PATH || path.join(__dirname, 'ridemate.db')
+
+let db
+let pgPool
+
+if (USE_POSTGRES) {
+  // PostgreSQL for production
+  pgPool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+    max: 10,
+    idleTimeoutMillis: 30000,
+  })
+
+  // Test connection
+  pgPool.on('error', (err) => {
+    console.error('Unexpected PostgreSQL pool error:', err)
+  })
+
+  console.log('🐘 Using PostgreSQL database')
+} else {
+  // SQLite for development
+  db = new Database(DB_PATH)
+  db.pragma('foreign_keys = ON')
+  db.pragma('journal_mode = WAL')
+  db.pragma('synchronous = NORMAL')
+  db.pragma('cache_size = -8000')
+  db.pragma('temp_store = MEMORY')
+  db.pragma('mmap_size = 268435456')
+  db.pragma('busy_timeout = 5000')
+  console.log('🗃️  Using SQLite database (development)')
+}
+
+// ─── Unified Query Interface ──────────────────────────────────────────────────
+
+/**
+ * Execute a query and return all rows
+ */
+export async function all(sql, params = []) {
+  if (USE_POSTGRES) {
+    const client = await pgPool.connect()
+    try {
+      const result = await client.query(sql, params)
+      return result.rows
+    } finally {
+      client.release()
+    }
+  } else {
+    const stmt = db.prepare(sql)
+    return stmt.all(...params)
+  }
+}
+
+/**
+ * Execute a query and return the first row
+ */
+export async function get(sql, params = []) {
+  if (USE_POSTGRES) {
+    const client = await pgPool.connect()
+    try {
+      const result = await client.query(sql, params)
+      return result.rows[0] || null
+    } finally {
+      client.release()
+    }
+  } else {
+    const stmt = db.prepare(sql)
+    return stmt.get(...params)
+  }
+}
+
+/**
+ * Execute a query and return the last insert row id (SQLite) or INSERT ... RETURNING id (PostgreSQL)
+ */
+export async function run(sql, params = []) {
+  if (USE_POSTGRES) {
+    const client = await pgPool.connect()
+    try {
+      // For INSERT statements, we need to handle RETURNING
+      const result = await client.query(sql, params)
+      return { lastInsertRowid: result.rows[0]?.id, changes: result.rowCount }
+    } finally {
+      client.release()
+    }
+  } else {
+    const stmt = db.prepare(sql)
+    const result = stmt.run(...params)
+    return { lastInsertRowid: result.lastInsertRowid, changes: result.changes }
+  }
+}
+
+/**
+ * Execute multiple statements in a transaction
+ */
+export async function transaction(fn) {
+  if (USE_POSTGRES) {
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      const result = await fn({
+        all: (sql, params) => client.query(sql, params).then(r => r.rows),
+        get: (sql, params) => client.query(sql, params).then(r => r.rows[0] || null),
+        run: (sql, params) => client.query(sql, params).then(r => ({ lastInsertRowid: r.rows[0]?.id, changes: r.rowCount })),
+      })
+      await client.query('COMMIT')
+      return result
+    } catch (e) {
+      await client.query('ROLLBACK')
+      throw e
+    } finally {
+      client.release()
+    }
+  } else {
+    const txn = db.transaction(fn)
+    return txn({
+      all: (sql, params) => db.prepare(sql).all(...params),
+      get: (sql, params) => db.prepare(sql).get(...params),
+      run: (sql, params) => {
+        const result = db.prepare(sql).run(...params)
+        return { lastInsertRowid: result.lastInsertRowid, changes: result.changes }
+      },
+    })
+  }
+}
+
+/**
+ * Execute raw SQL (for schema migrations)
+ */
+export async function exec(sql) {
+  if (USE_POSTGRES) {
+    const client = await pgPool.connect()
+    try {
+      await client.query(sql)
+    } finally {
+      client.release()
+    }
+  } else {
+    db.exec(sql)
+  }
+}
+
+/**
+ * Close database connections (for tests)
+ */
+export async function close() {
+  if (USE_POSTGRES) {
+    await pgPool.end()
+  } else {
+    db.close()
+  }
+}
+
+// ─── Schema Conversion Helpers ────────────────────────────────────────────────
+
+/**
+ * Convert SQLite schema to PostgreSQL schema
+ */
+function toPostgresSchema(sqliteSql) {
+  return sqliteSql
+    // Types
+    .replace(/\bINTEGER PRIMARY KEY AUTOINCREMENT\b/g, 'SERIAL PRIMARY KEY')
+    .replace(/\bINTEGER PRIMARY KEY\b/g, 'SERIAL PRIMARY KEY')
+    .replace(/\bTEXT NOT NULL DEFAULT \(datetime\('now'\)\)/g, 'TIMESTAMP NOT NULL DEFAULT NOW()')
+    .replace(/\bTEXT DEFAULT \(datetime\('now'\)\)/g, 'TIMESTAMP DEFAULT NOW()')
+    .replace(/\bTEXT NOT NULL DEFAULT 0\b/g, 'BOOLEAN NOT NULL DEFAULT FALSE')
+    .replace(/\bINTEGER NOT NULL DEFAULT 0\b/g, 'BOOLEAN NOT NULL DEFAULT FALSE')
+    .replace(/\bINTEGER NOT NULL DEFAULT 1\b/g, 'INTEGER NOT NULL DEFAULT 1')
+    .replace(/\bREAL\b/g, 'DOUBLE PRECISION')
+    .replace(/\bTEXT\b/g, 'TEXT')
+    // Check constraints
+    .replace(/CHECK \(([^)]+)\)/g, (match, check) => {
+      // Convert boolean checks
+      return match
+        .replace(/IN \('([^']+)',\s*'([^']+)'\)/g, "IN ('$1', '$2')")
+    })
+    // Remove SQLite-specific pragmas/comments
+    .replace(/--.*$/gm, '')
+    .replace(/PRAGMA [^;]+;/g, '')
+}
+
+/**
+ * Get the schema SQL for the current database
+ */
+function getSchemaSql() {
+  const sqliteSchema = `
+-- Core tables
 CREATE TABLE IF NOT EXISTS users (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  id                SERIAL PRIMARY KEY,
   name              TEXT NOT NULL,
   email             TEXT NOT NULL UNIQUE,
   phone             TEXT NOT NULL,
   password_hash     TEXT NOT NULL,
   bio               TEXT DEFAULT '',
   avatar            TEXT DEFAULT NULL,
-  email_verified    INTEGER NOT NULL DEFAULT 0,
-  created_at        TEXT DEFAULT (datetime('now'))
+  email_verified    BOOLEAN NOT NULL DEFAULT FALSE,
+  is_admin          BOOLEAN NOT NULL DEFAULT FALSE,
+  is_suspended      BOOLEAN NOT NULL DEFAULT FALSE,
+  phone_verified    BOOLEAN NOT NULL DEFAULT FALSE,
+  id_verified       BOOLEAN NOT NULL DEFAULT FALSE,
+  referral_code     TEXT DEFAULT NULL,
+  referred_by       INTEGER DEFAULT NULL REFERENCES users(id),
+  credit_balance    DOUBLE PRECISION NOT NULL DEFAULT 0,
+  created_at        TIMESTAMP DEFAULT NOW()
 );
 
--- password reset tokens (type: 'reset' | 'verify' — verifies email)
 CREATE TABLE IF NOT EXISTS reset_tokens (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  id         SERIAL PRIMARY KEY,
   user_id    INTEGER NOT NULL REFERENCES users(id),
   token      TEXT NOT NULL,
   type       TEXT NOT NULL DEFAULT 'reset' CHECK (type IN ('reset','verify')),
-  expires_at TEXT NOT NULL,
-  used       INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now'))
+  expires_at TIMESTAMP NOT NULL,
+  used       BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS rides (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id       INTEGER NOT NULL REFERENCES users(id),
-  vehicle_type  TEXT NOT NULL CHECK (vehicle_type IN ('bike','car','auto','van','other')),
-  vehicle_model TEXT,
-  from_name     TEXT NOT NULL,
-  from_lat      REAL NOT NULL,
-  from_lng      REAL NOT NULL,
-  to_name       TEXT NOT NULL,
-  to_lat        REAL NOT NULL,
-  to_lng        REAL NOT NULL,
-  depart_at     TEXT NOT NULL,
-  seats_total   INTEGER NOT NULL DEFAULT 1,
-  price         REAL NOT NULL DEFAULT 0,
-  notes         TEXT,
-  status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','full','cancelled','completed')),
-  repeat_every  TEXT CHECK (repeat_every IN ('none','daily','weekly','weekdays')) DEFAULT 'none',
+  id               SERIAL PRIMARY KEY,
+  user_id          INTEGER NOT NULL REFERENCES users(id),
+  vehicle_type     TEXT NOT NULL CHECK (vehicle_type IN ('bike','car','auto','van','other')),
+  vehicle_model    TEXT,
+  from_name        TEXT NOT NULL,
+  from_lat         DOUBLE PRECISION NOT NULL,
+  from_lng         DOUBLE PRECISION NOT NULL,
+  to_name          TEXT NOT NULL,
+  to_lat           DOUBLE PRECISION NOT NULL,
+  to_lng           DOUBLE PRECISION NOT NULL,
+  depart_at        TIMESTAMP NOT NULL,
+  seats_total      INTEGER NOT NULL DEFAULT 1,
+  price            DOUBLE PRECISION NOT NULL DEFAULT 0,
+  notes            TEXT,
+  status           TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','full','cancelled','completed')),
+  repeat_every     TEXT CHECK (repeat_every IN ('none','daily','weekly','weekdays')) DEFAULT 'none',
   repeat_parent_id INTEGER DEFAULT NULL REFERENCES rides(id),
-  repeat_child_on  TEXT DEFAULT NULL,
-  created_at    TEXT DEFAULT (datetime('now'))
+  repeat_child_on  DATE DEFAULT NULL,
+  reminder_sent    BOOLEAN NOT NULL DEFAULT FALSE,
+  cancel_reason    TEXT DEFAULT NULL,
+  created_at       TIMESTAMP DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS requests (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  id         SERIAL PRIMARY KEY,
   ride_id    INTEGER NOT NULL REFERENCES rides(id),
   rider_id   INTEGER NOT NULL REFERENCES users(id),
   seats      INTEGER NOT NULL DEFAULT 1,
   message    TEXT,
   status     TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected','cancelled')),
-  created_at TEXT DEFAULT (datetime('now')),
+  cancel_reason TEXT DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT NOW(),
   UNIQUE (ride_id, rider_id)
 );
 
 CREATE TABLE IF NOT EXISTS ratings (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  id            SERIAL PRIMARY KEY,
   ride_id       INTEGER NOT NULL REFERENCES rides(id),
   from_user_id  INTEGER NOT NULL REFERENCES users(id),
   to_user_id    INTEGER NOT NULL REFERENCES users(id),
   stars         INTEGER NOT NULL CHECK (stars BETWEEN 1 AND 5),
   review        TEXT,
-  created_at    TEXT DEFAULT (datetime('now')),
+  created_at    TIMESTAMP DEFAULT NOW(),
   UNIQUE (ride_id, from_user_id, to_user_id)
 );
 
--- in-app notifications
 CREATE TABLE IF NOT EXISTS notifications (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  id         SERIAL PRIMARY KEY,
   user_id    INTEGER NOT NULL REFERENCES users(id),
   type       TEXT NOT NULL,
   title      TEXT NOT NULL,
   body       TEXT NOT NULL DEFAULT '',
   link       TEXT,
-  read       INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now'))
+  read       BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT NOW()
 );
 
--- direct messaging between two users (owner <-> rider after acceptance)
 CREATE TABLE IF NOT EXISTS messages (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  ride_id      INTEGER NOT NULL REFERENCES rides(id),
-  sender_id    INTEGER NOT NULL REFERENCES users(id),
-  recipient_id INTEGER NOT NULL REFERENCES users(id),
-  body         TEXT NOT NULL,
-  read         INTEGER NOT NULL DEFAULT 0,
-  created_at   TEXT DEFAULT (datetime('now'))
+  id            SERIAL PRIMARY KEY,
+  ride_id       INTEGER NOT NULL REFERENCES rides(id),
+  sender_id     INTEGER NOT NULL REFERENCES users(id),
+  recipient_id  INTEGER NOT NULL REFERENCES users(id),
+  body          TEXT NOT NULL,
+  read          BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at    TIMESTAMP DEFAULT NOW()
 );
 
--- saved / favorite routes for one-tap offering & finding
 CREATE TABLE IF NOT EXISTS saved_routes (
-  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  id        SERIAL PRIMARY KEY,
   user_id   INTEGER NOT NULL REFERENCES users(id),
   label     TEXT,
   from_name TEXT NOT NULL,
-  from_lat  REAL NOT NULL,
-  from_lng  REAL NOT NULL,
+  from_lat  DOUBLE PRECISION NOT NULL,
+  from_lng  DOUBLE PRECISION NOT NULL,
   to_name   TEXT NOT NULL,
-  to_lat    REAL NOT NULL,
-  to_lng    REAL NOT NULL,
-  created_at TEXT DEFAULT (datetime('now')),
+  to_lat    DOUBLE PRECISION NOT NULL,
+  to_lng    DOUBLE PRECISION NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW(),
   UNIQUE (user_id, from_name, to_name)
 );
 
-CREATE INDEX IF NOT EXISTS idx_rides_status_depart ON rides(status, depart_at);
-CREATE INDEX IF NOT EXISTS idx_requests_ride ON requests(ride_id, status);
-CREATE INDEX IF NOT EXISTS idx_requests_rider ON requests(rider_id);
-CREATE INDEX IF NOT EXISTS idx_ratings_to ON ratings(to_user_id);
-CREATE INDEX IF NOT EXISTS idx_ratings_ride ON ratings(ride_id);
-CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read);
-CREATE INDEX IF NOT EXISTS idx_msg_pair ON messages(ride_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_saved_user ON saved_routes(user_id);
-`)
-
-// ---------- lightweight migrations for pre-existing databases ----------
-// New columns added to tables that already exist won't appear via
-// CREATE TABLE IF NOT EXISTS, so add them here when missing.
-function ensureColumn(table, column, ddl) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name)
-  if (!cols.includes(column)) {
-    try {
-      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
-    } catch {
-      /* already exists or not applicable */
-    }
-  }
-}
-ensureColumn('users', 'bio', "TEXT DEFAULT ''")
-ensureColumn('users', 'avatar', "TEXT DEFAULT NULL")
-ensureColumn('users', 'email_verified', 'INTEGER NOT NULL DEFAULT 0')
-ensureColumn('rides', 'repeat_every', "TEXT DEFAULT 'none'")
-ensureColumn('rides', 'repeat_parent_id', 'INTEGER DEFAULT NULL')
-ensureColumn('rides', 'repeat_child_on', "TEXT DEFAULT NULL")
-ensureColumn('messages', 'read', 'INTEGER NOT NULL DEFAULT 0')
-ensureColumn('reset_tokens', 'type', "TEXT NOT NULL DEFAULT 'reset'")
-
-db.exec(`
--- phone verification OTP codes
+-- Phone verification OTP codes
 CREATE TABLE IF NOT EXISTS phone_verifications (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  id         SERIAL PRIMARY KEY,
   user_id    INTEGER NOT NULL REFERENCES users(id),
   code       TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  used       INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now'))
+  expires_at TIMESTAMP NOT NULL,
+  used       BOOLEAN NOT NULL DEFAULT FALSE,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT NOW()
 );
 
--- user reports (both directions; moderators review)
+-- User reports
 CREATE TABLE IF NOT EXISTS reports (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  id          SERIAL PRIMARY KEY,
   reporter_id INTEGER NOT NULL REFERENCES users(id),
   reported_id INTEGER NOT NULL REFERENCES users(id),
   ride_id     INTEGER REFERENCES rides(id),
   reason      TEXT NOT NULL,
   details     TEXT,
   status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','reviewed','actioned','dismissed')),
-  created_at  TEXT DEFAULT (datetime('now')),
+  created_at  TIMESTAMP DEFAULT NOW(),
   UNIQUE (reporter_id, reported_id, ride_id)
 );
 
--- user blocks (either party blocks the other from messaging/booking)
+-- User blocks
 CREATE TABLE IF NOT EXISTS blocked_users (
   blocker_id INTEGER NOT NULL REFERENCES users(id),
   blocked_id INTEGER NOT NULL REFERENCES users(id),
-  created_at TEXT DEFAULT (datetime('now')),
+  created_at TIMESTAMP DEFAULT NOW(),
   PRIMARY KEY (blocker_id, blocked_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_phone_verify_user ON phone_verifications(user_id);
-CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
-CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports(reported_id);
-CREATE INDEX IF NOT EXISTS idx_blocked_blocked ON blocked_users(blocked_id);
-`)
+-- Fare escrow
+CREATE TABLE IF NOT EXISTS escrow_payments (
+  id                  SERIAL PRIMARY KEY,
+  ride_id             INTEGER NOT NULL REFERENCES rides(id),
+  request_id          INTEGER NOT NULL REFERENCES requests(id),
+  payer_id            INTEGER NOT NULL REFERENCES users(id),
+  payee_id            INTEGER NOT NULL REFERENCES users(id),
+  amount_paise        INTEGER NOT NULL,
+  currency            TEXT NOT NULL DEFAULT 'INR',
+  status              TEXT NOT NULL DEFAULT 'created' CHECK (status IN ('created','captured','released','refunded','cancelled')),
+  provider            TEXT NOT NULL DEFAULT 'mock',
+  provider_order_id   TEXT,
+  provider_payment_id TEXT,
+  receipt             TEXT,
+  created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
+  captured_at         TIMESTAMP,
+  released_at         TIMESTAMP,
+  refunded_at         TIMESTAMP,
+  UNIQUE (request_id)
+);
 
-// users moderation + trust columns (migrate onto existing DBs)
-ensureColumn('users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0')
-ensureColumn('users', 'is_suspended', 'INTEGER NOT NULL DEFAULT 0')
-ensureColumn('users', 'phone_verified', 'INTEGER NOT NULL DEFAULT 0')
+-- Live trip tracking
+CREATE TABLE IF NOT EXISTS trips (
+  id         SERIAL PRIMARY KEY,
+  ride_id    INTEGER NOT NULL REFERENCES rides(id),
+  user_id    INTEGER NOT NULL REFERENCES users(id),
+  role       TEXT NOT NULL DEFAULT 'owner' CHECK (role IN ('owner','rider')),
+  status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended')),
+  started_at TIMESTAMP DEFAULT NOW(),
+  ended_at   TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE (ride_id, user_id)
+);
 
-db.exec(`CREATE INDEX IF NOT EXISTS idx_reset_user ON reset_tokens(user_id)`)
-db.exec(`CREATE INDEX IF NOT EXISTS idx_rides_repeat ON rides(repeat_parent_id)`)
-db.exec(`CREATE INDEX IF NOT EXISTS idx_msg_recip ON messages(recipient_id, read)`)
+CREATE TABLE IF NOT EXISTS trip_locations (
+  id      SERIAL PRIMARY KEY,
+  trip_id INTEGER NOT NULL REFERENCES trips(id),
+  lat     DOUBLE PRECISION NOT NULL,
+  lng     DOUBLE PRECISION NOT NULL,
+  at      TIMESTAMP DEFAULT NOW()
+);
+
+-- SOS alerts
+CREATE TABLE IF NOT EXISTS sos_alerts (
+  id         SERIAL PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id),
+  lat        DOUBLE PRECISION,
+  lng        DOUBLE PRECISION,
+  ride_id    INTEGER REFERENCES rides(id),
+  message    TEXT,
+  status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Government ID verification (KYC)
+CREATE TABLE IF NOT EXISTS id_verifications (
+  id           SERIAL PRIMARY KEY,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  doc_type     TEXT NOT NULL,
+  doc_image    TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  admin_note   TEXT,
+  created_at   TIMESTAMP DEFAULT NOW(),
+  reviewed_at  TIMESTAMP
+);
+
+-- Follow a fellow owner
+CREATE TABLE IF NOT EXISTS owner_follows (
+  follower_id INTEGER NOT NULL REFERENCES users(id),
+  followee_id INTEGER NOT NULL REFERENCES users(id),
+  created_at  TIMESTAMP DEFAULT NOW(),
+  PRIMARY KEY (follower_id, followee_id)
+);
+
+-- Referral credits ledger
+CREATE TABLE IF NOT EXISTS credit_ledger (
+  id         SERIAL PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id),
+  amount     DOUBLE PRECISION NOT NULL,
+  reason     TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Key-value store for app metadata
+CREATE TABLE IF NOT EXISTS __ridemate_kv (
+  k TEXT PRIMARY KEY,
+  v TEXT
+);
+`
+
+  if (USE_POSTGRES) {
+    return toPostgresSchema(sqliteSchema)
+  }
+  return sqliteSchema
+}
+
+// ─── Initialize Schema ────────────────────────────────────────────────────────
+
+async function initSchema() {
+  const schema = getSchemaSql()
+  await exec(schema)
+
+  // Create indexes
+  const indexes = USE_POSTGRES ? postgresIndexes() : sqliteIndexes()
+  for (const idx of indexes) {
+    try {
+      await exec(idx)
+    } catch (e) {
+      // Index might already exist
+      if (!e.message.includes('already exists') && !e.message.includes('duplicate')) {
+        console.warn('Index creation warning:', e.message)
+      }
+    }
+  }
+
+  // Run migrations for existing columns
+  await runMigrations()
+}
+
+function sqliteIndexes() {
+  return [
+    'CREATE INDEX IF NOT EXISTS idx_rides_status_depart ON rides(status, depart_at)',
+    'CREATE INDEX IF NOT EXISTS idx_requests_ride ON requests(ride_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_requests_rider ON requests(rider_id)',
+    'CREATE INDEX IF NOT EXISTS idx_ratings_to ON ratings(to_user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_ratings_ride ON ratings(ride_id)',
+    'CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read)',
+    'CREATE INDEX IF NOT EXISTS idx_msg_pair ON messages(ride_id, created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_saved_user ON saved_routes(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_phone_verify_user ON phone_verifications(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status)',
+    'CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports(reported_id)',
+    'CREATE INDEX IF NOT EXISTS idx_blocked_blocked ON blocked_users(blocked_id)',
+    'CREATE INDEX IF NOT EXISTS idx_escrow_ride ON escrow_payments(ride_id)',
+    'CREATE INDEX IF NOT EXISTS idx_escrow_payer ON escrow_payments(payer_id)',
+    'CREATE INDEX IF NOT EXISTS idx_escrow_payee ON escrow_payments(payee_id)',
+    'CREATE INDEX IF NOT EXISTS idx_reset_user ON reset_tokens(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_rides_repeat ON rides(repeat_parent_id)',
+    'CREATE INDEX IF NOT EXISTS idx_msg_recip ON messages(recipient_id, read)',
+    'CREATE INDEX IF NOT EXISTS idx_rides_reminder ON rides(reminder_sent)',
+    // Spatial indexes (partial for open rides)
+    'CREATE INDEX IF NOT EXISTS idx_rides_from_coords ON rides(from_lat, from_lng) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_rides_to_coords ON rides(to_lat, to_lng) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_rides_depart_status ON rides(depart_at, status) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_rides_vehicle ON rides(vehicle_type) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_rides_price ON rides(price) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_requests_ride_status ON requests(ride_id, status) WHERE status IN (\'pending\', \'accepted\')',
+    // Growth indexes
+    'CREATE INDEX IF NOT EXISTS idx_follow_followee ON owner_follows(followee_id)',
+    'CREATE INDEX IF NOT EXISTS idx_credit_user ON credit_ledger(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_trips_user ON trips(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_trips_ride ON trips(ride_id)',
+    'CREATE INDEX IF NOT EXISTS idx_trip_loc ON trip_locations(trip_id)',
+    'CREATE INDEX IF NOT EXISTS idx_sos_status ON sos_alerts(status)',
+    'CREATE INDEX IF NOT EXISTS idx_id_verify_user ON id_verifications(user_id, status)',
+  ]
+}
+
+function postgresIndexes() {
+  return [
+    'CREATE INDEX IF NOT EXISTS idx_rides_status_depart ON rides(status, depart_at)',
+    'CREATE INDEX IF NOT EXISTS idx_requests_ride ON requests(ride_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_requests_rider ON requests(rider_id)',
+    'CREATE INDEX IF NOT EXISTS idx_ratings_to ON ratings(to_user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_ratings_ride ON ratings(ride_id)',
+    'CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read)',
+    'CREATE INDEX IF NOT EXISTS idx_msg_pair ON messages(ride_id, created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_saved_user ON saved_routes(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_phone_verify_user ON phone_verifications(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status)',
+    'CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports(reported_id)',
+    'CREATE INDEX IF NOT EXISTS idx_blocked_blocked ON blocked_users(blocked_id)',
+    'CREATE INDEX IF NOT EXISTS idx_escrow_ride ON escrow_payments(ride_id)',
+    'CREATE INDEX IF NOT EXISTS idx_escrow_payer ON escrow_payments(payer_id)',
+    'CREATE INDEX IF NOT EXISTS idx_escrow_payee ON escrow_payments(payee_id)',
+    'CREATE INDEX IF NOT EXISTS idx_reset_user ON reset_tokens(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_rides_repeat ON rides(repeat_parent_id)',
+    'CREATE INDEX IF NOT EXISTS idx_msg_recip ON messages(recipient_id, read)',
+    'CREATE INDEX IF NOT EXISTS idx_rides_reminder ON rides(reminder_sent)',
+    // Spatial indexes (partial for open rides)
+    'CREATE INDEX IF NOT EXISTS idx_rides_from_coords ON rides(from_lat, from_lng) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_rides_to_coords ON rides(to_lat, to_lng) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_rides_depart_status ON rides(depart_at, status) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_rides_vehicle ON rides(vehicle_type) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_rides_price ON rides(price) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_requests_ride_status ON requests(ride_id, status) WHERE status IN (\'pending\', \'accepted\')',
+    // Growth indexes
+    'CREATE INDEX IF NOT EXISTS idx_follow_followee ON owner_follows(followee_id)',
+    'CREATE INDEX IF NOT EXISTS idx_credit_user ON credit_ledger(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_trips_user ON trips(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_trips_ride ON trips(ride_id)',
+    'CREATE INDEX IF NOT EXISTS idx_trip_loc ON trip_locations(trip_id)',
+    'CREATE INDEX IF NOT EXISTS idx_sos_status ON sos_alerts(status)',
+    'CREATE INDEX IF NOT EXISTS idx_id_verify_user ON id_verifications(user_id, status)',
+    // PostGIS spatial indexes (for PostGIS-enabled queries)
+    'CREATE INDEX IF NOT EXISTS idx_rides_from_geom ON rides USING GIST (ST_MakePoint(from_lng, from_lat)) WHERE status = \'open\'',
+    'CREATE INDEX IF NOT EXISTS idx_rides_to_geom ON rides USING GIST (ST_MakePoint(to_lng, to_lat)) WHERE status = \'open\'',
+  ]
+}
+
+// ─── Lightweight Migrations ──────────────────────────────────────────────────
+
+async function runMigrations() {
+  // This function adds missing columns to existing tables
+  const migrations = [
+    // Users
+    { table: 'users', column: 'bio', ddl: USE_POSTGRES ? "TEXT DEFAULT ''" : "TEXT DEFAULT ''" },
+    { table: 'users', column: 'avatar', ddl: 'TEXT DEFAULT NULL' },
+    { table: 'users', column: 'email_verified', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'is_admin', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'is_suspended', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'phone_verified', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'id_verified', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'referral_code', ddl: 'TEXT DEFAULT NULL' },
+    { table: 'users', column: 'referred_by', ddl: 'INTEGER DEFAULT NULL' },
+    { table: 'users', column: 'credit_balance', ddl: USE_POSTGRES ? 'DOUBLE PRECISION NOT NULL DEFAULT 0' : 'REAL NOT NULL DEFAULT 0' },
+
+    // Rides
+    { table: 'rides', column: 'repeat_every', ddl: USE_POSTGRES ? "TEXT DEFAULT 'none'" : "TEXT DEFAULT 'none'" },
+    { table: 'rides', column: 'repeat_parent_id', ddl: 'INTEGER DEFAULT NULL' },
+    { table: 'rides', column: 'repeat_child_on', ddl: 'DATE DEFAULT NULL' },
+    { table: 'rides', column: 'reminder_sent', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'rides', column: 'cancel_reason', ddl: 'TEXT DEFAULT NULL' },
+
+    // Requests
+    { table: 'requests', column: 'cancel_reason', ddl: 'TEXT DEFAULT NULL' },
+
+    // Messages
+    { table: 'messages', column: 'read', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+
+    // Reset tokens
+    { table: 'reset_tokens', column: 'type', ddl: USE_POSTGRES ? "TEXT NOT NULL DEFAULT 'reset'" : "TEXT NOT NULL DEFAULT 'reset'" },
+
+    // Phone verifications
+    { table: 'phone_verifications', column: 'attempts', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+  ]
+
+  for (const m of migrations) {
+    try {
+      const cols = await all(
+        USE_POSTGRES
+          ? `SELECT column_name FROM information_schema.columns WHERE table_name = $1`
+          : `PRAGMA table_info(${m.table})`,
+        USE_POSTGRES ? [m.table] : []
+      )
+      const colNames = USE_POSTGRES ? cols.map(c => c.column_name) : cols.map(c => c.name)
+      if (!colNames.includes(m.column)) {
+        await exec(`ALTER TABLE ${m.table} ADD COLUMN ${m.column} ${m.ddl}`)
+        console.log(`Added column ${m.table}.${m.column}`)
+      }
+    } catch (e) {
+      console.warn(`Migration warning for ${m.table}.${m.column}:`, e.message)
+    }
+  }
+}
+
+// Initialize on import
+let initPromise = initSchema()
+
+export async function ready() {
+  await initPromise
+}
+
+// Export the underlying db/pool for advanced use
+export { db, pgPool, USE_POSTGRES }

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="128" fill="#0d9488"/>
+  <g fill="#0b1020">
+    <path d="M256 128l96 32c0 80-14 128-96 176-82-48-96-96-96-176l96-32z" opacity="0"/>
+  </g>
+  <!-- Car body -->
+  <rect x="104" y="228" width="304" height="104" rx="24" fill="#ffffff"/>
+  <!-- Roof -->
+  <path d="M176 180h120c20 0 38 12 46 30l21 42c8 18-6 36-25 36H110c-19 0-33-18-25-36l21-42c8-18 26-30 46-30z" fill="#ffffff"/>
+  <!-- Windows -->
+  <path d="M190 196h44v-30h-24l-20 30zm60 0h44l-20-30h-24v30zm-76 0l-26 38h26v-38zm92 0h26l26-38h-26l-26 38z" fill="#1e293b"/>
+  <!-- Wheels -->
+  <circle cx="182" cy="344" r="30" fill="#0b1020"/>
+  <circle cx="188" cy="338" r="16" fill="#ffffff"/>
+  <circle cx="330" cy="344" r="30" fill="#0b1020"/>
+  <circle cx="336" cy="338" r="16" fill="#ffffff"/>
+</svg>

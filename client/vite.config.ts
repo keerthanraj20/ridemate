@@ -11,7 +11,9 @@ export default defineConfig({
     },
   },
   server: {
-    proxy: { '/api': 'http://localhost:4000' },
+    proxy: {
+      '/api': { target: 'http://localhost:4000', ws: true },
+    },
     warmup: { clientFiles: ['./src/components/*.{jsx,tsx}', './src/*.{jsx,tsx}'] },
   },
   build: {

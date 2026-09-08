@@ -2,6 +2,7 @@ import dotenv from 'dotenv'
 import path from 'node:path'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { createServer } from 'node:http'
 import express from 'express'
 import cors from 'cors'
 import rateLimit from 'express-rate-limit'
@@ -10,7 +11,15 @@ import rideRoutes from './routes/rides.js'
 import profileRoutes from './routes/profile.js'
 import notificationRoutes from './routes/notifications.js'
 import safetyRoutes from './routes/safety.js'
+import paymentRoutes, { paymentWebhook } from './routes/payments.js'
+import growthRoutes from './routes/growth.js'
+import tripRoutes from './routes/trips.js'
+import verificationRoutes from './routes/verifications.js'
+import geocodeRoutes from './routes/geocode.js'
+import { attachWs } from './ws.js'
 import { startRecurringScheduler } from './recur.js'
+import { startReminderScheduler } from './reminders.js'
+import { startBackupScheduler } from './backup.js'
 
 // .env lives at the project root (this file is in server/)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -43,6 +52,14 @@ app.use(
 // 2.5 MB body limit: avatars are uploaded as base64 data-URIs (~1.4x the
 // binary size), so the default 100kb limit would reject even a small picture.
 app.use(express.json({ limit: '2.5mb' }))
+
+// Razorpay webhook must see the RAW body to verify the HMAC signature, so it
+// is registered before the JSON parser above.
+app.post(
+  '/api/payments/webhook',
+  express.raw({ type: 'application/json', limit: '1mb' }),
+  paymentWebhook
+)
 
 // Security headers (no external dependency)
 app.use((req, res, next) => {
@@ -113,7 +130,23 @@ app.use('/api/profile/avatar', avatarLimiter)
 app.use('/api', generalLimiter, profileRoutes)
 app.use('/api', generalLimiter, notificationRoutes)
 app.use('/api/phone/send-code', otpLimiter)
+// Hard-limit OTP code guesses at the gateway too (in addition to the per-code
+// attempt cap inside safety.js) so a distributed brute-force is throttled.
+const otpVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,  // 15 min
+  max: 20,                    // 20 verify attempts per window
+  message: { error: 'Too many verification attempts, try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.RM_DISABLE_RATE_LIMIT === '1',
+})
+app.use('/api/phone/verify', otpVerifyLimiter)
 app.use('/api', generalLimiter, safetyRoutes)
+app.use('/api', generalLimiter, paymentRoutes)
+app.use('/api', generalLimiter, growthRoutes)
+app.use('/api', generalLimiter, tripRoutes)
+app.use('/api', generalLimiter, verificationRoutes)
+app.use('/api', geocodeRoutes)
 
 // 404 + error handler (for API routes)
 app.use((req, res, next) => {
@@ -143,8 +176,12 @@ const isDirectRun = process.env.NODE_ENV === 'production' ||
   (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
 if (isDirectRun) {
   const PORT = process.env.PORT || 4000
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = createServer(app)
+  attachWs(server)
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚗 RideMate API running at http://localhost:${PORT}`)
     startRecurringScheduler()
+    startReminderScheduler()
+    startBackupScheduler()
   })
 }
