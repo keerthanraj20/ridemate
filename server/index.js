@@ -33,9 +33,10 @@ if (!process.env.JWT_SECRET) {
 
 export const app = express()
 
-// Trust a single reverse proxy (e.g. nginx/Caddy) for secure IP/HTTPS
-// detection. Set RM_TRUST_PROXY=1 in production.
-if (process.env.RM_TRUST_PROXY === '1') app.set('trust proxy', 1)
+// Trust a single reverse proxy (e.g. Render/nginx/Caddy) for secure IP/HTTPS
+// detection so express-rate-limit keys on the real client IP, not the proxy's.
+// Enabled automatically in production (Render) or via RM_TRUST_PROXY=1.
+if (process.env.RM_TRUST_PROXY === '1' || process.env.NODE_ENV === 'production') app.set('trust proxy', 1)
 
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map((o) => o.trim())

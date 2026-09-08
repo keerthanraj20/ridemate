@@ -72,6 +72,9 @@ function pgStmt(sql, params = []) {
     })
     // SQLite date(r.depart_at) → Postgres cast to date
     .replace(/\bdate\(([^)]+)\)/gi, '($1)::date')
+    // SQLite substr(expr,1,10) on dates → Postgres text slice (PG has no
+    // substr() for timestamp; ::text of a timestamp is 'YYYY-MM-DD HH:...')
+    .replace(/\bsubstr\(\s*([^,]+?)\s*,\s*1\s*,\s*10\s*\)/gi, 'LEFT($1::text, 10)')
 
   if (/^insert\s+or\s+ignore\s+into\b/i.test(s)) {
     s = s.replace(/^insert\s+or\s+ignore\s+into\b/i, 'INSERT INTO')
