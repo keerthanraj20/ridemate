@@ -57,7 +57,7 @@ router.get('/rides/:id/messages', auth, (req, res) => {
 })
 
 // Send a chat message to the other party on an accepted ride.
-router.post('/rides/:id/messages', auth, (req, res) => {
+router.post('/rides/:id/messages', auth, async (req, res) => {
   const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
 
@@ -82,7 +82,7 @@ router.post('/rides/:id/messages', auth, (req, res) => {
     recipientId = ride.user_id
   }
   if (!recipientId) return res.status(400).json({ error: 'No accepted rider to message' })
-  if (isBlocked(req.user.id, recipientId))
+  if (await isBlocked(req.user.id, recipientId))
     return res.status(403).json({ error: 'You cannot message this user' })
 
   const info = db

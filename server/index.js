@@ -17,6 +17,7 @@ import tripRoutes from './routes/trips.js'
 import verificationRoutes from './routes/verifications.js'
 import geocodeRoutes from './routes/geocode.js'
 import { attachWs } from './ws.js'
+import { ready } from './db.js'
 import { startRecurringScheduler } from './recur.js'
 import { startReminderScheduler } from './reminders.js'
 import { startBackupScheduler } from './backup.js'
@@ -178,8 +179,9 @@ if (isDirectRun) {
   const PORT = process.env.PORT || 4000
   const server = createServer(app)
   attachWs(server)
-  server.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚗 RideMate API running at http://localhost:${PORT}`)
+    await ready()
     startRecurringScheduler()
     startReminderScheduler()
     startBackupScheduler()

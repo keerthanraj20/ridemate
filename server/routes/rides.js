@@ -395,11 +395,11 @@ router.get('/requests/mine', auth, (req, res) => {
 })
 
 // ---------- request a seat ----------
-router.post('/rides/:id/request', auth, (req, res) => {
+router.post('/rides/:id/request', auth, async (req, res) => {
   const ride = db.prepare('SELECT * FROM rides WHERE id=?').get(Number(req.params.id))
   if (!ride) return res.status(404).json({ error: 'Ride not found' })
   if (ride.user_id === req.user.id) return res.status(400).json({ error: 'This is your own ride 🙂' })
-  if (isBlocked(ride.user_id, req.user.id)) return res.status(403).json({ error: 'You cannot request rides from this user' })
+  if (await isBlocked(ride.user_id, req.user.id)) return res.status(403).json({ error: 'You cannot request rides from this user' })
   if (ride.status !== 'open') return res.status(400).json({ error: 'This ride is no longer taking requests' })
   if (new Date(ride.depart_at).getTime() < Date.now()) return res.status(400).json({ error: 'This ride already departed' })
 

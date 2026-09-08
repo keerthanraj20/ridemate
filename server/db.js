@@ -42,6 +42,14 @@ if (USE_POSTGRES) {
 
 // ─── Unified Query Interface ──────────────────────────────────────────────────
 
+// SQLite compatibility shim. Routes are written in PostgreSQL SQL ($N
+// placeholders, NOW()). better-sqlite3 expects `?` anonymous params and has no
+// NOW() function, so normalize here when running on SQLite.
+function sqliteStmt(sql, params = []) {
+  const converted = sql.replace(/\$(\d+)\b/g, '?').replace(/\bNOW\(\)/g, "datetime('now')")
+  return { stmt: db.prepare(converted), params }
+}
+
 /**
  * Execute a query and return all rows
  */
@@ -55,8 +63,8 @@ export async function all(sql, params = []) {
       client.release()
     }
   } else {
-    const stmt = db.prepare(sql)
-    return stmt.all(...params)
+    const { stmt, params: bind } = sqliteStmt(sql, params)
+    return stmt.all(...bind)
   }
 }
 
@@ -73,8 +81,8 @@ export async function get(sql, params = []) {
       client.release()
     }
   } else {
-    const stmt = db.prepare(sql)
-    return stmt.get(...params)
+    const { stmt, params: bind } = sqliteStmt(sql, params)
+    return stmt.get(...bind)
   }
 }
 
@@ -92,8 +100,8 @@ export async function run(sql, params = []) {
       client.release()
     }
   } else {
-    const stmt = db.prepare(sql)
-    const result = stmt.run(...params)
+    const { stmt, params: bind } = sqliteStmt(sql, params)
+    const result = stmt.run(...bind)
     return { lastInsertRowid: result.lastInsertRowid, changes: result.changes }
   }
 }
@@ -122,10 +130,17 @@ export async function transaction(fn) {
   } else {
     const txn = db.transaction(fn)
     return txn({
-      all: (sql, params) => db.prepare(sql).all(...params),
-      get: (sql, params) => db.prepare(sql).get(...params),
+      all: (sql, params) => {
+        const { stmt, params: bind } = sqliteStmt(sql, params)
+        return stmt.all(...bind)
+      },
+      get: (sql, params) => {
+        const { stmt, params: bind } = sqliteStmt(sql, params)
+        return stmt.get(...bind)
+      },
       run: (sql, params) => {
-        const result = db.prepare(sql).run(...params)
+        const { stmt, params: bind } = sqliteStmt(sql, params)
+        const result = stmt.run(...bind)
         return { lastInsertRowid: result.lastInsertRowid, changes: result.changes }
       },
     })
@@ -168,13 +183,15 @@ function toPostgresSchema(sqliteSql) {
   return sqliteSql
     // Types
     .replace(/\bINTEGER PRIMARY KEY AUTOINCREMENT\b/g, 'SERIAL PRIMARY KEY')
-    .replace(/\bINTEGER PRIMARY KEY\b/g, 'SERIAL PRIMARY KEY')
-    .replace(/\bTEXT NOT NULL DEFAULT \(datetime\('now'\)\)/g, 'TIMESTAMP NOT NULL DEFAULT NOW()')
-    .replace(/\bTEXT DEFAULT \(datetime\('now'\)\)/g, 'TIMESTAMP DEFAULT NOW()')
-    .replace(/\bTEXT NOT NULL DEFAULT 0\b/g, 'BOOLEAN NOT NULL DEFAULT FALSE')
-    .replace(/\bINTEGER NOT NULL DEFAULT 0\b/g, 'BOOLEAN NOT NULL DEFAULT FALSE')
-    .replace(/\bINTEGER NOT NULL DEFAULT 1\b/g, 'INTEGER NOT NULL DEFAULT 1')
     .replace(/\bREAL\b/g, 'DOUBLE PRECISION')
+    // Datetime defaults: SQLite datetime('now') → Postgres NOW()
+    .replace(/TEXT NOT NULL DEFAULT \(datetime\('now'\)\)/g, 'TIMESTAMP NOT NULL DEFAULT NOW()')
+    .replace(/TEXT DEFAULT \(datetime\('now'\)\)/g, 'TIMESTAMP DEFAULT NOW()')
+    // Boolean flags: INTEGER 0/1 → BOOLEAN (only for known flag columns so
+    // count columns like `attempts` keep their integer type)
+    .replace(/\b(email_verified|is_admin|is_suspended|phone_verified|id_verified|reminder_sent|used|read)\s+INTEGER NOT NULL DEFAULT 0\b/g, (m, col) => `${col} BOOLEAN NOT NULL DEFAULT FALSE`)
+    .replace(/\bTEXT NOT NULL DEFAULT 0\b/g, 'BOOLEAN NOT NULL DEFAULT FALSE')
+    .replace(/\bINTEGER NOT NULL DEFAULT 1\b/g, 'INTEGER NOT NULL DEFAULT 1')
     .replace(/\bTEXT\b/g, 'TEXT')
     // Check constraints
     .replace(/CHECK \(([^)]+)\)/g, (match, check) => {
@@ -194,137 +211,137 @@ function getSchemaSql() {
   const sqliteSchema = `
 -- Core tables
 CREATE TABLE IF NOT EXISTS users (
-  id                SERIAL PRIMARY KEY,
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
   name              TEXT NOT NULL,
   email             TEXT NOT NULL UNIQUE,
   phone             TEXT NOT NULL,
   password_hash     TEXT NOT NULL,
   bio               TEXT DEFAULT '',
   avatar            TEXT DEFAULT NULL,
-  email_verified    BOOLEAN NOT NULL DEFAULT FALSE,
-  is_admin          BOOLEAN NOT NULL DEFAULT FALSE,
-  is_suspended      BOOLEAN NOT NULL DEFAULT FALSE,
-  phone_verified    BOOLEAN NOT NULL DEFAULT FALSE,
-  id_verified       BOOLEAN NOT NULL DEFAULT FALSE,
+  email_verified    INTEGER NOT NULL DEFAULT 0,
+  is_admin          INTEGER NOT NULL DEFAULT 0,
+  is_suspended      INTEGER NOT NULL DEFAULT 0,
+  phone_verified    INTEGER NOT NULL DEFAULT 0,
+  id_verified       INTEGER NOT NULL DEFAULT 0,
   referral_code     TEXT DEFAULT NULL,
   referred_by       INTEGER DEFAULT NULL REFERENCES users(id),
-  credit_balance    DOUBLE PRECISION NOT NULL DEFAULT 0,
-  created_at        TIMESTAMP DEFAULT NOW()
+  credit_balance    REAL NOT NULL DEFAULT 0,
+  created_at        TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS reset_tokens (
-  id         SERIAL PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id    INTEGER NOT NULL REFERENCES users(id),
   token      TEXT NOT NULL,
   type       TEXT NOT NULL DEFAULT 'reset' CHECK (type IN ('reset','verify')),
   expires_at TIMESTAMP NOT NULL,
-  used       BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMP DEFAULT NOW()
+  used       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS rides (
-  id               SERIAL PRIMARY KEY,
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id          INTEGER NOT NULL REFERENCES users(id),
   vehicle_type     TEXT NOT NULL CHECK (vehicle_type IN ('bike','car','auto','van','other')),
   vehicle_model    TEXT,
   from_name        TEXT NOT NULL,
-  from_lat         DOUBLE PRECISION NOT NULL,
-  from_lng         DOUBLE PRECISION NOT NULL,
+  from_lat         REAL NOT NULL,
+  from_lng         REAL NOT NULL,
   to_name          TEXT NOT NULL,
-  to_lat           DOUBLE PRECISION NOT NULL,
-  to_lng           DOUBLE PRECISION NOT NULL,
+  to_lat           REAL NOT NULL,
+  to_lng           REAL NOT NULL,
   depart_at        TIMESTAMP NOT NULL,
   seats_total      INTEGER NOT NULL DEFAULT 1,
-  price            DOUBLE PRECISION NOT NULL DEFAULT 0,
+  price            REAL NOT NULL DEFAULT 0,
   notes            TEXT,
   status           TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','full','cancelled','completed')),
   repeat_every     TEXT CHECK (repeat_every IN ('none','daily','weekly','weekdays')) DEFAULT 'none',
   repeat_parent_id INTEGER DEFAULT NULL REFERENCES rides(id),
   repeat_child_on  DATE DEFAULT NULL,
-  reminder_sent    BOOLEAN NOT NULL DEFAULT FALSE,
+  reminder_sent    INTEGER NOT NULL DEFAULT 0,
   cancel_reason    TEXT DEFAULT NULL,
-  created_at       TIMESTAMP DEFAULT NOW()
+  created_at       TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS requests (
-  id         SERIAL PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   ride_id    INTEGER NOT NULL REFERENCES rides(id),
   rider_id   INTEGER NOT NULL REFERENCES users(id),
   seats      INTEGER NOT NULL DEFAULT 1,
   message    TEXT,
   status     TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected','cancelled')),
   cancel_reason TEXT DEFAULT NULL,
-  created_at TIMESTAMP DEFAULT NOW(),
+  created_at TEXT DEFAULT (datetime('now')),
   UNIQUE (ride_id, rider_id)
 );
 
 CREATE TABLE IF NOT EXISTS ratings (
-  id            SERIAL PRIMARY KEY,
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
   ride_id       INTEGER NOT NULL REFERENCES rides(id),
   from_user_id  INTEGER NOT NULL REFERENCES users(id),
   to_user_id    INTEGER NOT NULL REFERENCES users(id),
   stars         INTEGER NOT NULL CHECK (stars BETWEEN 1 AND 5),
   review        TEXT,
-  created_at    TIMESTAMP DEFAULT NOW(),
+  created_at    TEXT DEFAULT (datetime('now')),
   UNIQUE (ride_id, from_user_id, to_user_id)
 );
 
 CREATE TABLE IF NOT EXISTS notifications (
-  id         SERIAL PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id    INTEGER NOT NULL REFERENCES users(id),
   type       TEXT NOT NULL,
   title      TEXT NOT NULL,
   body       TEXT NOT NULL DEFAULT '',
   link       TEXT,
-  read       BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMP DEFAULT NOW()
+  read       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-  id            SERIAL PRIMARY KEY,
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
   ride_id       INTEGER NOT NULL REFERENCES rides(id),
   sender_id     INTEGER NOT NULL REFERENCES users(id),
   recipient_id  INTEGER NOT NULL REFERENCES users(id),
   body          TEXT NOT NULL,
-  read          BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at    TIMESTAMP DEFAULT NOW()
+  read          INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS saved_routes (
-  id        SERIAL PRIMARY KEY,
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id   INTEGER NOT NULL REFERENCES users(id),
   label     TEXT,
   from_name TEXT NOT NULL,
-  from_lat  DOUBLE PRECISION NOT NULL,
-  from_lng  DOUBLE PRECISION NOT NULL,
+  from_lat  REAL NOT NULL,
+  from_lng  REAL NOT NULL,
   to_name   TEXT NOT NULL,
-  to_lat    DOUBLE PRECISION NOT NULL,
-  to_lng    DOUBLE PRECISION NOT NULL,
-  created_at TIMESTAMP DEFAULT NOW(),
+  to_lat    REAL NOT NULL,
+  to_lng    REAL NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
   UNIQUE (user_id, from_name, to_name)
 );
 
 -- Phone verification OTP codes
 CREATE TABLE IF NOT EXISTS phone_verifications (
-  id         SERIAL PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id    INTEGER NOT NULL REFERENCES users(id),
   code       TEXT NOT NULL,
   expires_at TIMESTAMP NOT NULL,
-  used       BOOLEAN NOT NULL DEFAULT FALSE,
+  used       INTEGER NOT NULL DEFAULT 0,
   attempts   INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMP DEFAULT NOW()
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 -- User reports
 CREATE TABLE IF NOT EXISTS reports (
-  id          SERIAL PRIMARY KEY,
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
   reporter_id INTEGER NOT NULL REFERENCES users(id),
   reported_id INTEGER NOT NULL REFERENCES users(id),
   ride_id     INTEGER REFERENCES rides(id),
   reason      TEXT NOT NULL,
   details     TEXT,
   status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','reviewed','actioned','dismissed')),
-  created_at  TIMESTAMP DEFAULT NOW(),
+  created_at  TEXT DEFAULT (datetime('now')),
   UNIQUE (reporter_id, reported_id, ride_id)
 );
 
@@ -332,13 +349,13 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE TABLE IF NOT EXISTS blocked_users (
   blocker_id INTEGER NOT NULL REFERENCES users(id),
   blocked_id INTEGER NOT NULL REFERENCES users(id),
-  created_at TIMESTAMP DEFAULT NOW(),
+  created_at TEXT DEFAULT (datetime('now')),
   PRIMARY KEY (blocker_id, blocked_id)
 );
 
 -- Fare escrow
 CREATE TABLE IF NOT EXISTS escrow_payments (
-  id                  SERIAL PRIMARY KEY,
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   ride_id             INTEGER NOT NULL REFERENCES rides(id),
   request_id          INTEGER NOT NULL REFERENCES requests(id),
   payer_id            INTEGER NOT NULL REFERENCES users(id),
@@ -350,7 +367,7 @@ CREATE TABLE IF NOT EXISTS escrow_payments (
   provider_order_id   TEXT,
   provider_payment_id TEXT,
   receipt             TEXT,
-  created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
   captured_at         TIMESTAMP,
   released_at         TIMESTAMP,
   refunded_at         TIMESTAMP,
@@ -359,46 +376,46 @@ CREATE TABLE IF NOT EXISTS escrow_payments (
 
 -- Live trip tracking
 CREATE TABLE IF NOT EXISTS trips (
-  id         SERIAL PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   ride_id    INTEGER NOT NULL REFERENCES rides(id),
   user_id    INTEGER NOT NULL REFERENCES users(id),
   role       TEXT NOT NULL DEFAULT 'owner' CHECK (role IN ('owner','rider')),
   status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended')),
-  started_at TIMESTAMP DEFAULT NOW(),
+  started_at TEXT DEFAULT (datetime('now')),
   ended_at   TIMESTAMP,
-  created_at TIMESTAMP DEFAULT NOW(),
+  created_at TEXT DEFAULT (datetime('now')),
   UNIQUE (ride_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS trip_locations (
-  id      SERIAL PRIMARY KEY,
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
   trip_id INTEGER NOT NULL REFERENCES trips(id),
-  lat     DOUBLE PRECISION NOT NULL,
-  lng     DOUBLE PRECISION NOT NULL,
-  at      TIMESTAMP DEFAULT NOW()
+  lat     REAL NOT NULL,
+  lng     REAL NOT NULL,
+  at      TEXT DEFAULT (datetime('now'))
 );
 
 -- SOS alerts
 CREATE TABLE IF NOT EXISTS sos_alerts (
-  id         SERIAL PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id    INTEGER NOT NULL REFERENCES users(id),
-  lat        DOUBLE PRECISION,
-  lng        DOUBLE PRECISION,
+  lat        REAL,
+  lng        REAL,
   ride_id    INTEGER REFERENCES rides(id),
   message    TEXT,
   status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
-  created_at TIMESTAMP DEFAULT NOW()
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 -- Government ID verification (KYC)
 CREATE TABLE IF NOT EXISTS id_verifications (
-  id           SERIAL PRIMARY KEY,
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id      INTEGER NOT NULL REFERENCES users(id),
   doc_type     TEXT NOT NULL,
   doc_image    TEXT NOT NULL,
   status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
   admin_note   TEXT,
-  created_at   TIMESTAMP DEFAULT NOW(),
+  created_at   TEXT DEFAULT (datetime('now')),
   reviewed_at  TIMESTAMP
 );
 
@@ -406,17 +423,17 @@ CREATE TABLE IF NOT EXISTS id_verifications (
 CREATE TABLE IF NOT EXISTS owner_follows (
   follower_id INTEGER NOT NULL REFERENCES users(id),
   followee_id INTEGER NOT NULL REFERENCES users(id),
-  created_at  TIMESTAMP DEFAULT NOW(),
+  created_at  TEXT DEFAULT (datetime('now')),
   PRIMARY KEY (follower_id, followee_id)
 );
 
 -- Referral credits ledger
 CREATE TABLE IF NOT EXISTS credit_ledger (
-  id         SERIAL PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id    INTEGER NOT NULL REFERENCES users(id),
-  amount     DOUBLE PRECISION NOT NULL,
+  amount     REAL NOT NULL,
   reason     TEXT NOT NULL,
-  created_at TIMESTAMP DEFAULT NOW()
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 -- Key-value store for app metadata
@@ -544,27 +561,27 @@ async function runMigrations() {
     // Users
     { table: 'users', column: 'bio', ddl: USE_POSTGRES ? "TEXT DEFAULT ''" : "TEXT DEFAULT ''" },
     { table: 'users', column: 'avatar', ddl: 'TEXT DEFAULT NULL' },
-    { table: 'users', column: 'email_verified', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'users', column: 'is_admin', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'users', column: 'is_suspended', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'users', column: 'phone_verified', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'users', column: 'id_verified', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'email_verified', ddl: USE_POSTGRES ? 'INTEGER NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'is_admin', ddl: USE_POSTGRES ? 'INTEGER NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'is_suspended', ddl: USE_POSTGRES ? 'INTEGER NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'phone_verified', ddl: USE_POSTGRES ? 'INTEGER NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'id_verified', ddl: USE_POSTGRES ? 'INTEGER NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0' },
     { table: 'users', column: 'referral_code', ddl: 'TEXT DEFAULT NULL' },
     { table: 'users', column: 'referred_by', ddl: 'INTEGER DEFAULT NULL' },
-    { table: 'users', column: 'credit_balance', ddl: USE_POSTGRES ? 'DOUBLE PRECISION NOT NULL DEFAULT 0' : 'REAL NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'credit_balance', ddl: USE_POSTGRES ? 'REAL NOT NULL DEFAULT 0' : 'REAL NOT NULL DEFAULT 0' },
 
     // Rides
     { table: 'rides', column: 'repeat_every', ddl: USE_POSTGRES ? "TEXT DEFAULT 'none'" : "TEXT DEFAULT 'none'" },
     { table: 'rides', column: 'repeat_parent_id', ddl: 'INTEGER DEFAULT NULL' },
     { table: 'rides', column: 'repeat_child_on', ddl: 'DATE DEFAULT NULL' },
-    { table: 'rides', column: 'reminder_sent', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'rides', column: 'reminder_sent', ddl: USE_POSTGRES ? 'INTEGER NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0' },
     { table: 'rides', column: 'cancel_reason', ddl: 'TEXT DEFAULT NULL' },
 
     // Requests
     { table: 'requests', column: 'cancel_reason', ddl: 'TEXT DEFAULT NULL' },
 
     // Messages
-    { table: 'messages', column: 'read', ddl: USE_POSTGRES ? 'BOOLEAN NOT NULL DEFAULT FALSE' : 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'messages', column: 'read', ddl: USE_POSTGRES ? 'INTEGER NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0' },
 
     // Reset tokens
     { table: 'reset_tokens', column: 'type', ddl: USE_POSTGRES ? "TEXT NOT NULL DEFAULT 'reset'" : "TEXT NOT NULL DEFAULT 'reset'" },
