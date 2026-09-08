@@ -187,11 +187,8 @@ function toPostgresSchema(sqliteSql) {
     // Datetime defaults: SQLite datetime('now') → Postgres NOW()
     .replace(/TEXT NOT NULL DEFAULT \(datetime\('now'\)\)/g, 'TIMESTAMP NOT NULL DEFAULT NOW()')
     .replace(/TEXT DEFAULT \(datetime\('now'\)\)/g, 'TIMESTAMP DEFAULT NOW()')
-    // Boolean flags: INTEGER 0/1 → BOOLEAN (only for known flag columns so
-    // count columns like `attempts` keep their integer type)
-    .replace(/\b(email_verified|is_admin|is_suspended|phone_verified|id_verified|reminder_sent|used|read)\s+INTEGER NOT NULL DEFAULT 0\b/g, (m, col) => `${col} BOOLEAN NOT NULL DEFAULT FALSE`)
-    .replace(/\bTEXT NOT NULL DEFAULT 0\b/g, 'BOOLEAN NOT NULL DEFAULT FALSE')
-    .replace(/\bINTEGER NOT NULL DEFAULT 1\b/g, 'INTEGER NOT NULL DEFAULT 1')
+    // Flag columns stay INTEGER 0/1 on Postgres too (matches how the routes
+    // write them); no BOOLEAN conversion.
     .replace(/\bTEXT\b/g, 'TEXT')
     // Check constraints
     .replace(/CHECK \(([^)]+)\)/g, (match, check) => {
@@ -451,6 +448,23 @@ CREATE TABLE IF NOT EXISTS __ridemate_kv (
 
 // ─── Initialize Schema ────────────────────────────────────────────────────────
 
+// Any schema created while flag columns were converted to BOOLEAN (older deploys)
+// must be migrated back to INTEGER 0/1, since all route SQL writes plain 0/1.
+// This is idempotent: it only touches columns that are actually BOOLEAN.
+const PG_FLAG_COLS = ['email_verified', 'is_admin', 'is_suspended', 'phone_verified', 'id_verified', 'reminder_sent', 'used', 'read']
+
+async function fixPgBooleanCols() {
+  const cols = await all(
+    "SELECT table_name, column_name FROM information_schema.columns WHERE data_type = 'boolean' AND column_name = ANY($1::text[])",
+    [PG_FLAG_COLS]
+  )
+  for (const c of cols) {
+    await exec(`ALTER TABLE ${c.table_name} ALTER COLUMN ${c.column_name} TYPE INTEGER USING ${c.column_name}::integer`)
+    await exec(`ALTER TABLE ${c.table_name} ALTER COLUMN ${c.column_name} SET DEFAULT 0`)
+    console.log(`🔧 Migrated ${c.table_name}.${c.column_name} boolean → integer`)
+  }
+}
+
 async function initSchema() {
   const schema = getSchemaSql()
   await exec(schema)
@@ -470,6 +484,11 @@ async function initSchema() {
 
   // Run migrations for existing columns
   await runMigrations()
+
+  // Postgres: migrate any BOOLEAN flag columns back to INTEGER (route SQL uses 0/1)
+  if (USE_POSTGRES) {
+    await fixPgBooleanCols()
+  }
 }
 
 function sqliteIndexes() {
