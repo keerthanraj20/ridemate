@@ -41,3 +41,18 @@ services:
         sync: false
       - key: SMS_TWILIO_FROM
         sync: false
+      # Email — fill MAIL_HOST/USER/PASS to enable real send (Gmail app password works).
+      # Leave empty and all emails print to the server logs instead.
+      - key: MAIL_HOST
+        sync: false
+      - key: MAIL_PORT
+        sync: false
+      - key: MAIL_USER
+        sync: false
+      - key: MAIL_PASS
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      # Set to your email to auto-promote that account to admin on boot.
+      - key: RM_ADMIN_EMAIL
+        sync: false

@@ -17,7 +17,7 @@ import tripRoutes from './routes/trips.js'
 import verificationRoutes from './routes/verifications.js'
 import geocodeRoutes from './routes/geocode.js'
 import { attachWs } from './ws.js'
-import { ready } from './db.js'
+import { ready, run } from './db.js'
 import { startRecurringScheduler } from './recur.js'
 import { startReminderScheduler } from './reminders.js'
 import { startBackupScheduler } from './backup.js'
@@ -182,6 +182,11 @@ if (isDirectRun) {
   server.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚗 RideMate API running at http://localhost:${PORT}`)
     await ready()
+    const adminEmail = (process.env.RM_ADMIN_EMAIL || '').trim().toLowerCase()
+    if (adminEmail) {
+      const info = await run('UPDATE users SET is_admin=1 WHERE lower(email)=$1', [adminEmail])
+      console.log(`👑 RM_ADMIN_EMAIL configured — promoted ${info.changes} user(s) to admin`)
+    }
     startRecurringScheduler()
     startReminderScheduler()
     startBackupScheduler()
