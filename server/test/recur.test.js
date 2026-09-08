@@ -5,12 +5,17 @@ import { freshDbPath, truncateAll } from './helpers.js'
 process.env.JWT_SECRET = 'test-secret-not-for-production'
 process.env.RM_DB_PATH = freshDbPath()
 process.env.RM_DISABLE_RATE_LIMIT = '1'
+process.env.RM_ALLOW_WIPEDB = '1'
 process.env.MAIL_HOST = ''
 process.env.MAIL_USER = ''
 process.env.MAIL_PASS = ''
 
-const { db } = await import('../db.js')
+const { db, run, all, exec, close, USE_POSTGRES } = await import('../db.js')
 const { generateRecurringRides } = await import('../recur.js')
+
+async function wipe() {
+  await truncateAll(db, USE_POSTGRES, exec)
+}
 
 function tomorrowUtcStr() {
   const now = new Date()
@@ -22,53 +27,55 @@ function tomorrowDOW() {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).getUTCDay()
 }
 
-// Insert a template ride directly, bypassing the API.
-function insertTemplate({ departAt, repeatEvery }) {
-  const info = db
-    .prepare(
-      `INSERT INTO rides
-       (user_id,vehicle_type,from_name,from_lat,from_lng,to_name,to_lat,to_lng,
-        depart_at,seats_total,price,status,repeat_every)
-       VALUES (?, 'car','A',0,0,'B',1,1,?,2,100,'open',?)`
-    )
-    .run(testUserId, departAt.toISOString(), repeatEvery)
-  return info.lastInsertRowid
+function repeatChildOn(row) {
+  return typeof row.repeat_child_on === 'string' ? row.repeat_child_on : row.repeat_child_on.toISOString().slice(0, 10)
 }
 
-function childrenOf(templateId) {
-  return db
-    .prepare('SELECT * FROM rides WHERE repeat_parent_id=?')
-    .all(templateId)
+// Insert a template ride directly, bypassing the API.
+async function insertTemplate({ departAt, repeatEvery }) {
+  return (await run(
+    `INSERT INTO rides
+     (user_id,vehicle_type,from_name,from_lat,from_lng,to_name,to_lat,to_lng,
+      depart_at,seats_total,price,status,repeat_every)
+     VALUES (?, 'car','A',0,0,'B',1,1,?,2,100,'open',?)`,
+    [testUserId, departAt.toISOString(), repeatEvery]
+  )).lastInsertRowid
+}
+
+async function childrenOf(templateId) {
+  return all('SELECT * FROM rides WHERE repeat_parent_id=?', [templateId])
 }
 
 let testUserId
 
-function freshUser() {
-  testUserId = db
-    .prepare("INSERT INTO users (name,email,phone,password_hash) VALUES ('T','t@test.com','1234567','x')")
-    .run().lastInsertRowid
+async function freshUser() {
+  testUserId = (await run(
+    "INSERT INTO users (name,email,phone,password_hash) VALUES ('T','t@test.com','1234567','x')"
+  )).lastInsertRowid
 }
 
 describe('recurring ride generator', () => {
-  before(() => {
-    truncateAll(db)
-    freshUser()
+  before(async () => {
+    await wipe()
+    await freshUser()
   })
-  after(() => db.close())
+  after(async () => {
+    await close()
+  })
 
   it('generates a daily instance for tomorrow with the same time-of-day', async () => {
-    truncateAll(db)
-    freshUser()
+    await wipe()
+    await freshUser()
     // a departure at a fixed local wall-clock time, chosen in the past so the
     // scheduler treats this row purely as a template
     const dep = new Date()
     dep.setUTCHours(9, 30, 0, 0)
-    const id = insertTemplate({ departAt: dep, repeatEvery: 'daily' })
+    const id = await insertTemplate({ departAt: dep, repeatEvery: 'daily' })
 
     await generateRecurringRides()
-    const kids = childrenOf(id)
+    const kids = await childrenOf(id)
     assert.equal(kids.length, 1)
-    assert.equal(kids[0].repeat_child_on, tomorrowUtcStr())
+    assert.equal(repeatChildOn(kids[0]), tomorrowUtcStr())
 
     const kidDep = new Date(kids[0].depart_at)
     assert.equal(kidDep.getUTCHours(), 9)
@@ -76,8 +83,8 @@ describe('recurring ride generator', () => {
   })
 
   it('weekly repeats on the departure weekday of the template, not creation day', async () => {
-    truncateAll(db)
-    freshUser()
+    await wipe()
+    await freshUser()
     // Pick a departure whose weekday equals tomorrow => should generate.
     // Pick a different weekday for another template => should NOT generate.
     const tDOW = tomorrowDOW()
@@ -92,13 +99,13 @@ describe('recurring ride generator', () => {
     const depOther = new Date(depMatch)
     depOther.setUTCDate(depOther.getUTCDate() + ((otherDOW - depOther.getUTCDay() + 7) % 7))
 
-    const matchId = insertTemplate({ departAt: depMatch, repeatEvery: 'weekly' })
-    const otherId = insertTemplate({ departAt: depOther, repeatEvery: 'weekly' })
+    const matchId = await insertTemplate({ departAt: depMatch, repeatEvery: 'weekly' })
+    const otherId = await insertTemplate({ departAt: depOther, repeatEvery: 'weekly' })
 
     await generateRecurringRides()
 
-    const matchKids = childrenOf(matchId)
-    const otherKids = childrenOf(otherId)
+    const matchKids = await childrenOf(matchId)
+    const otherKids = await childrenOf(otherId)
 
     // The matching-weekday template generated; the other did not.
     assert.equal(matchKids.length, 1)
@@ -106,33 +113,33 @@ describe('recurring ride generator', () => {
   })
 
   it('weekdays does not generate on Saturday or Sunday', async () => {
-    truncateAll(db)
-    freshUser()
+    await wipe()
+    await freshUser()
     // Only meaningful if tomorrow is a weekend; otherwise skip.
     const dow = tomorrowDOW()
     if (dow >= 1 && dow <= 5) return // weekday tomorrow → not a weekend test
 
     const dep = new Date()
     dep.setUTCHours(8, 0, 0, 0)
-    const id = insertTemplate({ departAt: dep, repeatEvery: 'weekdays' })
+    const id = await insertTemplate({ departAt: dep, repeatEvery: 'weekdays' })
 
     await generateRecurringRides()
-    assert.equal(childrenOf(id).length, 0)
+    assert.equal((await childrenOf(id)).length, 0)
   })
 
   it('does not duplicate an instance already generated for tomorrow', async () => {
-    truncateAll(db)
-    freshUser()
+    await wipe()
+    await freshUser()
     const dep = new Date()
     dep.setUTCHours(7, 0, 0, 0)
-    const id = insertTemplate({ departAt: dep, repeatEvery: 'daily' })
+    const id = await insertTemplate({ departAt: dep, repeatEvery: 'daily' })
 
     await generateRecurringRides()
-    const first = childrenOf(id)
+    const first = await childrenOf(id)
     assert.equal(first.length, 1)
 
     await generateRecurringRides()
-    assert.equal(childrenOf(id).length, 1)
-    assert.equal(childrenOf(id)[0].id, first[0].id)
+    assert.equal((await childrenOf(id)).length, 1)
+    assert.equal((await childrenOf(id))[0].id, first[0].id)
   })
 })

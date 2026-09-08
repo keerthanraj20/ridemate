@@ -7,12 +7,17 @@ import { freshDbPath, truncateAll } from './helpers.js'
 process.env.JWT_SECRET = 'test-secret-not-for-production'
 process.env.RM_DB_PATH = freshDbPath()
 process.env.RM_DISABLE_RATE_LIMIT = '1'
+process.env.RM_ALLOW_WIPEDB = '1'
 process.env.MAIL_HOST = ''
 process.env.MAIL_USER = ''
 process.env.MAIL_PASS = ''
 
 const { app } = await import('../index.js')
-const { db } = await import('../db.js')
+const { db, get, run, exec, close, USE_POSTGRES } = await import('../db.js')
+
+async function wipe() {
+  await truncateAll(db, USE_POSTGRES, exec)
+}
 
 let owner
 let rider
@@ -56,12 +61,12 @@ async function offerRide(token, over = {}) {
 }
 
 describe('RideMate API', () => {
-  before(() => {
-    truncateAll(db)
+  before(async () => {
+    await wipe()
   })
 
-  after(() => {
-    db.close()
+  after(async () => {
+    await close()
   })
 
   describe('auth', () => {
@@ -119,9 +124,7 @@ describe('RideMate API', () => {
         .set(authHeaders(token))
       assert.equal(verifyRes.status, 200)
 
-      const row = db
-        .prepare("SELECT token FROM reset_tokens WHERE type='verify' ORDER BY id DESC LIMIT 1")
-        .get()
+      const row = await get("SELECT token FROM reset_tokens WHERE type='verify' ORDER BY id DESC LIMIT 1")
       assert.ok(row, 'a verify token should exist')
 
       // redeeming the verify token at /reset-password must fail
@@ -144,9 +147,7 @@ describe('RideMate API', () => {
         .send({ email: 'purposes2@test.com' })
       assert.equal(forgot.status, 200)
 
-      const row = db
-        .prepare("SELECT token FROM reset_tokens WHERE type='reset' ORDER BY id DESC LIMIT 1")
-        .get()
+      const row = await get("SELECT token FROM reset_tokens WHERE type='reset' ORDER BY id DESC LIMIT 1")
       assert.ok(row, 'a reset token should exist')
 
       // redeeming the reset token at /verify-email/confirm must fail
@@ -164,8 +165,8 @@ describe('RideMate API', () => {
   })
 
   describe('rides', () => {
-    beforeEach(() => {
-      truncateAll(db)
+    beforeEach(async () => {
+      await wipe()
     })
 
     it('owner can create a ride', async () => {
@@ -191,8 +192,8 @@ describe('RideMate API', () => {
   })
 
   describe('booking (seat atomicity)', () => {
-    beforeEach(() => {
-      truncateAll(db)
+    beforeEach(async () => {
+      await wipe()
     })
 
     async function makeRide({ seats = 2 } = {}) {
@@ -308,7 +309,7 @@ describe('RideMate API', () => {
 
   describe('ratings auth', () => {
     it('rejects unauthenticated access to a user ratings endpoint', async () => {
-      truncateAll(db)
+      await wipe()
       owner = (await register({ email: 'rate-owner@test.com' })).token
       const me = await request(app).get('/api/auth/me').set(authHeaders(owner))
       const res = await request(app).get(`/api/users/${me.body.user.id}/ratings`)
@@ -325,8 +326,8 @@ describe('RideMate API', () => {
   })
 
   describe('safety (phone, reports, blocks, account deletion)', () => {
-    beforeEach(() => {
-      truncateAll(db)
+    beforeEach(async () => {
+      await wipe()
     })
 
     async function users() {
@@ -340,7 +341,7 @@ describe('RideMate API', () => {
       const send = await request(app).post('/api/phone/send-code').set(authHeaders(a)).send({ phone: '9876543210' })
       assert.equal(send.status, 200)
 
-      const code = db.prepare("SELECT code FROM phone_verifications WHERE used=0 ORDER BY id DESC LIMIT 1").get().code
+      const code = (await get("SELECT code FROM phone_verifications WHERE used=0 ORDER BY id DESC LIMIT 1")).code
       const verify = await request(app).post('/api/phone/verify').set(authHeaders(a)).send({ code })
       assert.equal(verify.status, 200)
       assert.equal(verify.body.user.phone_verified, 1)
@@ -362,7 +363,7 @@ describe('RideMate API', () => {
         assert.equal(wrong.status, 400)
       }
       // the code is now consumed, so the *correct* code must also fail
-      const code = db.prepare("SELECT code FROM phone_verifications WHERE used=1 ORDER BY id DESC LIMIT 1").get().code
+      const code = (await get("SELECT code FROM phone_verifications WHERE used=1 ORDER BY id DESC LIMIT 1")).code
       const verify = await request(app).post('/api/phone/verify').set(authHeaders(a)).send({ code })
       assert.equal(verify.status, 400)
     })
@@ -400,7 +401,7 @@ describe('RideMate API', () => {
       const del = await request(app).delete('/api/account').set(authHeaders(a))
       assert.equal(del.status, 200)
 
-      const row = db.prepare('SELECT * FROM users WHERE id=?').get(userId)
+      const row = await get('SELECT * FROM users WHERE id=?', [userId])
       assert.equal(row.name, 'Deleted User')
       assert.match(row.email, /@deleted\.ridemate\.local/)
       assert.equal(row.is_suspended, 1)
@@ -413,7 +414,7 @@ describe('RideMate API', () => {
       assert.equal(report.status, 200)
 
       // promote b to admin (via db) and re-login so the token carries the flag
-      db.prepare('UPDATE users SET is_admin=1 WHERE id=?').run(meB.body.user.id)
+      await run('UPDATE users SET is_admin=1 WHERE id=?', [meB.body.user.id])
       const admin = (await request(app).post('/api/auth/login').send({ email: 'safe-b@test.com', password: 'secret123' })).body.token
 
       const list = await request(app).get('/api/admin/reports').set(authHeaders(admin))
@@ -431,8 +432,8 @@ describe('RideMate API', () => {
   })
 
   describe('payments / escrow', () => {
-    beforeEach(() => {
-      truncateAll(db)
+    beforeEach(async () => {
+      await wipe()
     })
 
     async function setupAccepted({ seats = 1, price = 200 } = {}) {
@@ -446,9 +447,10 @@ describe('RideMate API', () => {
         .set(authHeaders(riderTok))
         .send({ seats, message: 'Pay test' })
       assert.equal(reqRes.status, 200)
-      const requestId = db
-        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
-        .get(ride.id, riderRes.user.id).id
+      const requestId = (await get(
+        'SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1',
+        [ride.id, riderRes.user.id]
+      )).id
       const accept = await request(app)
         .post(`/api/requests/${requestId}/accept`)
         .set(authHeaders(ownerTok))
@@ -473,7 +475,7 @@ describe('RideMate API', () => {
     it('rejects paying for a booking that is not accepted', async () => {
       const { riderTok, requestId } = await setupAccepted()
       // mark the request rejected out-of-band so it is no longer accepted
-      db.prepare("UPDATE requests SET status='rejected' WHERE id=?").run(requestId)
+      await run("UPDATE requests SET status='rejected' WHERE id=?", [requestId])
       const res = await request(app)
         .post('/api/payments/order')
         .set(authHeaders(riderTok))
@@ -569,8 +571,8 @@ describe('RideMate API', () => {
   })
 
   describe('growth (referrals, follows, leaderboard)', () => {
-    beforeEach(() => {
-      truncateAll(db)
+    beforeEach(async () => {
+      await wipe()
     })
 
     async function acceptedRide(tokens) {
@@ -582,9 +584,10 @@ describe('RideMate API', () => {
         .set(authHeaders(tokens.riderTok))
         .send({ seats: 1, message: 'growth test' })
       assert.equal(reqRes.status, 200)
-      const requestId = db
-        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
-        .get(ride.id, tokens.rider.id).id
+      const requestId = (await get(
+        'SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1',
+        [ride.id, tokens.rider.id]
+      )).id
       await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(tokens.ownerTok))
       return { ride, requestId }
     }
@@ -635,9 +638,7 @@ describe('RideMate API', () => {
       assert.equal(follow.status, 200)
 
       await offerRide(owner.token)
-      const row = db
-        .prepare('SELECT COUNT(*) AS c FROM notifications WHERE user_id=?')
-        .get(fan.user.id)
+      const row = await get('SELECT COUNT(*) AS c FROM notifications WHERE user_id=?', [fan.user.id])
       assert.equal(row.c, 1)
 
       const list = await request(app)
@@ -667,8 +668,8 @@ describe('RideMate API', () => {
   })
 
   describe('trips + safety (live tracking, SOS)', () => {
-    beforeEach(() => {
-      truncateAll(db)
+    beforeEach(async () => {
+      await wipe()
     })
 
     async function setupTripper() {
@@ -681,9 +682,10 @@ describe('RideMate API', () => {
         .post(`/api/rides/${ride.id}/request`)
         .set(authHeaders(riderTok))
         .send({ seats: 1 })
-      const requestId = db
-        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
-        .get(ride.id, rider.user.id).id
+      const requestId = (await get(
+        'SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1',
+        [ride.id, rider.user.id]
+      )).id
       await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(ownerTok))
       return { ownerTok, riderTok, ride }
     }
@@ -726,9 +728,9 @@ describe('RideMate API', () => {
       assert.equal(alarm.status, 200)
 
       // promote a second account to admin and a non-admin is rejected
-      const sosRow = db.prepare('SELECT id FROM sos_alerts ORDER BY id DESC LIMIT 1').get()
+      const sosRow = await get('SELECT id FROM sos_alerts ORDER BY id DESC LIMIT 1')
       const admin = await register({ email: 'sos-admin@test.com' })
-      db.prepare('UPDATE users SET is_admin=1 WHERE id=?').run(admin.user.id)
+      await run('UPDATE users SET is_admin=1 WHERE id=?', [admin.user.id])
 
       const denied = await request(app).get('/api/admin/sos').set(authHeaders(user.token))
       assert.equal(denied.status, 403)
@@ -741,13 +743,13 @@ describe('RideMate API', () => {
         .post(`/api/admin/sos/${sosRow.id}/close`)
         .set(authHeaders(admin.token))
       assert.equal(close.status, 200)
-      assert.equal(db.prepare('SELECT status FROM sos_alerts WHERE id=?').get(sosRow.id).status, 'closed')
+      assert.equal((await get('SELECT status FROM sos_alerts WHERE id=?', [sosRow.id])).status, 'closed')
     })
   })
 
   describe('id verification', () => {
-    beforeEach(() => {
-      truncateAll(db)
+    beforeEach(async () => {
+      await wipe()
     })
 
     const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
@@ -755,7 +757,7 @@ describe('RideMate API', () => {
     it('submits a doc, enqueues for review, and admin approves it', async () => {
       const user = await register({ email: 'verify-user@test.com' })
       const admin = await register({ email: 'verify-admin@test.com' })
-      db.prepare('UPDATE users SET is_admin=1 WHERE id=?').run(admin.user.id)
+      await run('UPDATE users SET is_admin=1 WHERE id=?', [admin.user.id])
 
       const badMime = await request(app)
         .post('/api/verifications')
@@ -793,8 +795,8 @@ describe('RideMate API', () => {
   })
 
   describe('rides v2 (detail, round trip, cancel reason, filters)', () => {
-    beforeEach(() => {
-      truncateAll(db)
+    beforeEach(async () => {
+      await wipe()
     })
 
     it('returns ride detail with owner, seats, and my request status', async () => {
@@ -805,9 +807,10 @@ describe('RideMate API', () => {
         .post(`/api/rides/${ride.id}/request`)
         .set(authHeaders(rider.token))
         .send({ seats: 1 })
-      const requestId = db
-        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
-        .get(ride.id, rider.user.id).id
+      const requestId = (await get(
+        'SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1',
+        [ride.id, rider.user.id]
+      )).id
       await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(owner.token))
 
       const detail = await request(app)
@@ -844,9 +847,10 @@ describe('RideMate API', () => {
         .post(`/api/rides/${ride.id}/request`)
         .set(authHeaders(rider.token))
         .send({ seats: 1 })
-      const requestId = db
-        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
-        .get(ride.id, rider.user.id).id
+      const requestId = (await get(
+        'SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1',
+        [ride.id, rider.user.id]
+      )).id
       await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(owner.token))
 
       const riderCancel = await request(app)
@@ -854,14 +858,14 @@ describe('RideMate API', () => {
         .set(authHeaders(rider.token))
         .send({ reason: 'Plans changed' })
       assert.equal(riderCancel.status, 200)
-      assert.equal(db.prepare('SELECT cancel_reason FROM requests WHERE id=?').get(requestId).cancel_reason, 'Plans changed')
+      assert.equal((await get('SELECT cancel_reason FROM requests WHERE id=?', [requestId])).cancel_reason, 'Plans changed')
 
       const rideCancel = await request(app)
         .post(`/api/rides/${ride.id}/cancel`)
         .set(authHeaders(owner.token))
         .send({ reason: 'Vehicle broke down' })
       assert.equal(rideCancel.status, 200)
-      assert.equal(db.prepare('SELECT cancel_reason FROM rides WHERE id=?').get(ride.id).cancel_reason, 'Vehicle broke down')
+      assert.equal((await get('SELECT cancel_reason FROM rides WHERE id=?', [ride.id])).cancel_reason, 'Vehicle broke down')
     })
 
     it('excludes rides without enough free seats for the requested count', async () => {
@@ -872,9 +876,10 @@ describe('RideMate API', () => {
         .post(`/api/rides/${ride.id}/request`)
         .set(authHeaders(rider.token))
         .send({ seats: 2 })
-      const requestId = db
-        .prepare('SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1')
-        .get(ride.id, rider.user.id).id
+      const requestId = (await get(
+        'SELECT id FROM requests WHERE ride_id=? AND rider_id=? ORDER BY id DESC LIMIT 1',
+        [ride.id, rider.user.id]
+      )).id
       await request(app).post(`/api/requests/${requestId}/accept`).set(authHeaders(owner.token))
 
       const need3 = await request(app).get('/api/rides/search?min_seats=3').set(authHeaders(rider.token))

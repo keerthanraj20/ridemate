@@ -10,8 +10,22 @@ export function freshDbPath() {
   return path.join(dir, 'test.db')
 }
 
-// Reset the shared db singleton's tables between tests (keeps FK checks).
-export function truncateAll(db) {
+// Wipe every table between tests so each case starts clean
+// (keeps FK checks on SQLite; uses TRUNCATE ... CASCADE on Postgres).
+//
+// Safety: refuses to run unless RM_ALLOW_WIPEDB=1 set explicitly in the test
+// entrypoint, so an accidental `npm test` against a production Postgres URL
+// (e.g. one exported in the shell) can't destroy real data.
+export async function truncateAll(db, USE_POSTGRES, exec) {
+  if (process.env.RM_ALLOW_WIPEDB !== '1') {
+    throw new Error('Refusing to wipe the test DB: set RM_ALLOW_WIPEDB=1 to allow destructive truncation')
+  }
+  if (USE_POSTGRES) {
+    await exec(
+      'TRUNCATE messages, notifications, saved_routes, ratings, escrow_payments, requests, rides, reset_tokens, phone_verifications, reports, blocked_users, trip_locations, trips, sos_alerts, id_verifications, owner_follows, credit_ledger, users RESTART IDENTITY CASCADE'
+    )
+    return
+  }
   db.exec(`
     PRAGMA foreign_keys = OFF;
     DELETE FROM messages;
