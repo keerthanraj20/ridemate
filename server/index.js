@@ -17,8 +17,7 @@ import tripRoutes from './routes/trips.js'
 import verificationRoutes from './routes/verifications.js'
 import geocodeRoutes from './routes/geocode.js'
 import { attachWs } from './ws.js'
-import { ready, run, get } from './db.js'
-import { hashPassword } from './util.js'
+import { ready, run } from './db.js'
 import { startRecurringScheduler } from './recur.js'
 import { startReminderScheduler } from './reminders.js'
 import { startBackupScheduler } from './backup.js'
@@ -188,15 +187,6 @@ if (isDirectRun) {
     if (adminEmail) {
       const info = await run('UPDATE users SET is_admin=1 WHERE lower(email)=$1', [adminEmail])
       console.log(`👑 RM_ADMIN_EMAIL configured — promoted ${info.changes} user(s) to admin`)
-    }
-    // TEMP one-time admin password reset (remove after use)
-    {
-      const kv = await get("SELECT v FROM __ridemate_kv WHERE k='admin_pw_reset'")
-      if (!kv) {
-        await run('UPDATE users SET password_hash=$1 WHERE lower(email)=$2', [hashPassword('RideMate2026!'), adminEmail])
-        await run("INSERT INTO __ridemate_kv (k,v) VALUES ('admin_pw_reset','done') ON CONFLICT DO NOTHING")
-        console.log('TEMP admin password reset applied')
-      }
     }
     startRecurringScheduler()
     startReminderScheduler()
