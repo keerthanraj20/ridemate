@@ -459,6 +459,7 @@ async function fixPgBooleanCols() {
     [PG_FLAG_COLS]
   )
   for (const c of cols) {
+    await exec(`ALTER TABLE ${c.table_name} ALTER COLUMN ${c.column_name} DROP DEFAULT`)
     await exec(`ALTER TABLE ${c.table_name} ALTER COLUMN ${c.column_name} TYPE INTEGER USING ${c.column_name}::integer`)
     await exec(`ALTER TABLE ${c.table_name} ALTER COLUMN ${c.column_name} SET DEFAULT 0`)
     console.log(`🔧 Migrated ${c.table_name}.${c.column_name} boolean → integer`)
