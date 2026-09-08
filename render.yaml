@@ -27,3 +27,17 @@ services:
         sync: false
       - key: MAPMYINDIA_API_KEY
         sync: false
+      # SMS/OTP — set SMS_PROVIDER to textlocal or twilio, then fill the keys below.
+      # Leave SMS_PROVIDER as console and OTPs print to the server logs instead.
+      - key: SMS_PROVIDER
+        value: console
+      - key: SMS_TEXTLOCAL_API_KEY
+        sync: false
+      - key: SMS_TEXTLOCAL_SENDER
+        sync: false
+      - key: SMS_TWILIO_ACCOUNT_SID
+        sync: false
+      - key: SMS_TWILIO_AUTH_TOKEN
+        sync: false
+      - key: SMS_TWILIO_FROM
+        sync: false
