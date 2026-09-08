@@ -20,7 +20,7 @@ const SECRET = () => process.env.JWT_SECRET
 const CLIENT_URL = () => process.env.CLIENT_URL || 'http://localhost:5173'
 
 export function sign(u) {
-  return jwt.sign({ id: u.id, is_admin: u.is_admin ? 1 : 0 }, SECRET(), { expiresIn: '7d' }
+  return jwt.sign({ id: u.id, is_admin: u.is_admin ? 1 : 0 }, SECRET(), { expiresIn: '7d' })
 }
 
 export async function auth(req, res, next) {
