@@ -76,11 +76,11 @@ export async function generateReferralCode() {
 export async function streakWeeks(userId) {
   const rides = await all(
     `SELECT DISTINCT substr(depart_at,1,10) AS d FROM rides
-     WHERE user_id=$1 AND status='completed'
+     WHERE user_id=? AND status='completed'
      UNION
      SELECT DISTINCT substr(r.depart_at,1,10) AS d FROM rides r
      JOIN requests q ON q.ride_id=r.id
-     WHERE q.rider_id=$1 AND q.status='accepted' AND r.status='completed'`,
+     WHERE q.rider_id=? AND q.status='accepted' AND r.status='completed'`,
     [userId, userId]
   )
   if (rides.length === 0) return 0
