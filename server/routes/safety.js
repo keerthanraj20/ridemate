@@ -132,7 +132,7 @@ router.delete('/account', auth, async (req, res) => {
 
   // Anonymize PII while keeping the row so FK references (rides, requests,
   // messages, ratings) stay valid.
-  const fakeEmail = `deleted-${userId}-${Date.now()}@deleted.ridemate.local`
+  const fakeEmail = `deleted-${userId}-${Date.now()}@deleted.saathyaan.local`
   await run(
     "UPDATE users SET name='Deleted User', email=?, phone='', bio='', avatar=NULL, email_verified=0, phone_verified=0, is_suspended=1 WHERE id=?",
     [fakeEmail, userId]

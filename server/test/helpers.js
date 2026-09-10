@@ -6,7 +6,7 @@ import { test as baseTest } from 'node:test'
 // Create an isolated, empty SQLite DB for a clean test run.
 // Must be called BEFORE importing ../db.js or any module that pulls it in.
 export function freshDbPath() {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'ridemate-test-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'saathyaan-test-'))
   return path.join(dir, 'test.db')
 }
 

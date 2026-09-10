@@ -7,7 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // Determine which database to use
 const USE_POSTGRES = Boolean(process.env.DATABASE_URL)
-const DB_PATH = process.env.RM_DB_PATH || path.join(__dirname, 'ridemate.db')
+const DB_PATH = process.env.RM_DB_PATH || path.join(__dirname, 'saathyaan.db')
 
 let db
 let pgPool
@@ -492,7 +492,7 @@ CREATE TABLE IF NOT EXISTS credit_ledger (
 );
 
 -- Key-value store for app metadata
-CREATE TABLE IF NOT EXISTS __ridemate_kv (
+CREATE TABLE IF NOT EXISTS __saathyaan_kv (
   k TEXT PRIMARY KEY,
   v TEXT
 );

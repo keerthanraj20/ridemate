@@ -1,5 +1,5 @@
-/* RideMate Service Worker — offline shell + safe caching */
-const CACHE = "ridemate-v1";
+/* SaathYaan Service Worker — offline shell + safe caching */
+const CACHE = "saathyaan-v1";
 const PRECACHE = [
   "/",
   "/manifest.webmanifest",
@@ -40,7 +40,7 @@ self.addEventListener("fetch", (e) => {
           .then((res) => {
             if (res.ok) {
               const clone = res.clone();
-              caches.open("ridemate-tiles").then((c) => c.put(e.request, clone));
+              caches.open("saathyaan-tiles").then((c) => c.put(e.request, clone));
             }
             return res;
           })

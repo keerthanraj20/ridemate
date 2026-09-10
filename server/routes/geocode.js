@@ -88,7 +88,7 @@ async function googleGeocode(q, limit) {
   url.searchParams.set('key', key)
   url.searchParams.set('components', 'country:IN')
   url.searchParams.set('types', 'geocode')
-  url.searchParams.set('sessiontoken', 'ridemate-static')
+  url.searchParams.set('sessiontoken', 'saathyaan-static')
   const res = await fetch(url)
   if (!res.ok) return []
   const data = await res.json()

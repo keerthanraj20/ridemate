@@ -60,7 +60,7 @@ async function offerRide(token, over = {}) {
   return res
 }
 
-describe('RideMate API', () => {
+describe('SaathYaan API', () => {
   before(async () => {
     await wipe()
   })
@@ -403,7 +403,7 @@ describe('RideMate API', () => {
 
       const row = await get('SELECT * FROM users WHERE id=?', [userId])
       assert.equal(row.name, 'Deleted User')
-      assert.match(row.email, /@deleted\.ridemate\.local/)
+      assert.match(row.email, /@deleted\.saathyaan\.local/)
       assert.equal(row.is_suspended, 1)
     })
 

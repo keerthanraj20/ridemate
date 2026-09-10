@@ -27,7 +27,7 @@ export async function takeBackup() {
     console.log('💾 Postgres mode: skipping .db file backup (CSV exports still written)')
     return null
   }
-  const file = path.join(dir, `ridemate-${stamp}.db`)
+  const file = path.join(dir, `saathyaan-${stamp}.db`)
   db.backup(file)
   return file
 }
