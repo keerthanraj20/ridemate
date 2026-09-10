@@ -131,8 +131,8 @@ export function SharedMapPicker({
   const [fromQuery, setFromQuery] = useState(from.name || "")
   const [toQuery, setToQuery] = useState(to.name || "")
   const [locating, setLocating] = useState<"from" | "to" | null>(null)
-  const [fromSuggestions, setFromSuggestions] = useState<{ name?: string; display_name?: string; lat: string; lon: string }[]>([])
-  const [toSuggestions, setToSuggestions] = useState<{ name?: string; display_name?: string; lat: string; lon: string }[]>([])
+  const [fromSuggestions, setFromSuggestions] = useState<{ name?: string; display_name?: string; lat?: string | number; lng?: string | number }[]>([])
+  const [toSuggestions, setToSuggestions] = useState<{ name?: string; display_name?: string; lat?: string | number; lng?: string | number }[]>([])
   const [fromOpen, setFromOpen] = useState(false)
   const [toOpen, setToOpen] = useState(false)
   const fromDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -196,13 +196,13 @@ export function SharedMapPicker({
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    if (from.lat != null && from.lng != null) {
-      if (fromMarkerRef.current) fromMarkerRef.current.setLatLng([from.lat, from.lng])
-      else fromMarkerRef.current = L.marker([from.lat, from.lng], { icon: mapPinIcon("#0d9488") }).addTo(map)
+    if (Number.isFinite(from.lat) && Number.isFinite(from.lng)) {
+      if (fromMarkerRef.current) fromMarkerRef.current.setLatLng([from.lat!, from.lng!])
+      else fromMarkerRef.current = L.marker([from.lat!, from.lng!], { icon: mapPinIcon("#0d9488") }).addTo(map)
     }
-    if (to.lat != null && to.lng != null) {
-      if (toMarkerRef.current) toMarkerRef.current.setLatLng([to.lat, to.lng])
-      else toMarkerRef.current = L.marker([to.lat, to.lng], { icon: mapPinIcon("#f59e0b") }).addTo(map)
+    if (Number.isFinite(to.lat) && Number.isFinite(to.lng)) {
+      if (toMarkerRef.current) toMarkerRef.current.setLatLng([to.lat!, to.lng!])
+      else toMarkerRef.current = L.marker([to.lat!, to.lng!], { icon: mapPinIcon("#f59e0b") }).addTo(map)
     }
   }, [from.lat, from.lng, to.lat, to.lng])
 
@@ -331,12 +331,15 @@ export function SharedMapPicker({
                     onMouseDown={e => {
                       e.preventDefault()
                       const name = s.name || s.display_name || ""
+                      const lat = Number(s.lat), lng = Number(s.lng)
                       setFromQuery(name)
-                      setFrom({ name, lat: +s.lat, lng: +s.lon })
+                      setFrom({ name, lat, lng })
                       setFromOpen(false)
                       setFromSuggestions([])
-                      if (fromMarkerRef.current) fromMarkerRef.current.setLatLng([+s.lat, +s.lon])
-                      else if (mapRef.current) fromMarkerRef.current = L.marker([+s.lat, +s.lon], { icon: mapPinIcon("#0d9488") }).addTo(mapRef.current)
+                      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                        if (fromMarkerRef.current) fromMarkerRef.current.setLatLng([lat, lng])
+                        else if (mapRef.current) fromMarkerRef.current = L.marker([lat, lng], { icon: mapPinIcon("#0d9488") }).addTo(mapRef.current)
+                      }
                     }}
                   >
                     <MapPin size={12} className="text-ink-3 flex-shrink-0" />
@@ -388,12 +391,15 @@ export function SharedMapPicker({
                     onMouseDown={e => {
                       e.preventDefault()
                       const name = s.name || s.display_name || ""
+                      const lat = Number(s.lat), lng = Number(s.lng)
                       setToQuery(name)
-                      setTo({ name, lat: +s.lat, lng: +s.lon })
+                      setTo({ name, lat, lng })
                       setToOpen(false)
                       setToSuggestions([])
-                      if (toMarkerRef.current) toMarkerRef.current.setLatLng([+s.lat, +s.lon])
-                      else if (mapRef.current) toMarkerRef.current = L.marker([+s.lat, +s.lon], { icon: mapPinIcon("#f59e0b") }).addTo(mapRef.current)
+                      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                        if (toMarkerRef.current) toMarkerRef.current.setLatLng([lat, lng])
+                        else if (mapRef.current) toMarkerRef.current = L.marker([lat, lng], { icon: mapPinIcon("#f59e0b") }).addTo(mapRef.current)
+                      }
                     }}
                   >
                     <MapPin size={12} className="text-ink-3 flex-shrink-0" />

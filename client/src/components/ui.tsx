@@ -255,7 +255,7 @@ export function AutocompleteInput({
 }: {
   value: string; onChange: (v: string) => void; onSelect: (name: string) => void; placeholder: string; icon?: React.ReactNode
 }) {
-  const [suggestions, setSuggestions] = useState<{ name?: string; display_name?: string; lat: string; lon: string }[]>([])
+  const [suggestions, setSuggestions] = useState<{ name?: string; display_name?: string; lat?: number | string; lng?: number | string }[]>([])
   const [open, setOpen] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -306,7 +306,7 @@ export function AutocompleteInput({
               key={i}
               type="button"
               className="w-full text-left px-3 py-2.5 text-[13px] text-ink hover:bg-stone-50 flex items-center gap-2 border-b border-line/40 last:border-0"
-              onMouseDown={e => { e.preventDefault(); const n = s.name || s.display_name; onSelect(n ? n.split(",").slice(0, 2).join(", ") : String(s.lat + ", " + s.lon)); setOpen(false); setSuggestions([]) }}
+              onMouseDown={e => { e.preventDefault(); const n = s.name || s.display_name; onSelect(n ? n.split(",").slice(0, 2).join(", ") : String(s.lat + ", " + s.lng)); setOpen(false); setSuggestions([]) }}
             >
               <MapPin size={12} className="text-ink-3 flex-shrink-0" />
               <span className="truncate">{s.name || s.display_name}</span>
