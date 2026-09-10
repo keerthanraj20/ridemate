@@ -125,9 +125,9 @@ export function RideDetailView({ rideId, onNavigate, onOpenChat }: { rideId: num
   }
 
   const share = async () => {
-    const text = `RideMate · ${r.from_name} → ${r.to_name} · ${humanDate(r.depart_at)} ${humanTime(r.depart_at)} · ${perSeat}₹/seat`
+    const text = `SaathYaan · ${r.from_name} → ${r.to_name} · ${humanDate(r.depart_at)} ${humanTime(r.depart_at)} · ${perSeat}₹/seat`
     try {
-      if (navigator.share) { await navigator.share({ title: "RideMate trip", text }); return }
+      if (navigator.share) { await navigator.share({ title: "SaathYaan trip", text }); return }
       await navigator.clipboard.writeText(text)
       toast("Trip details copied to clipboard")
     } catch { /* user dismissed */ }

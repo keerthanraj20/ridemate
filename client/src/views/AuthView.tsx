@@ -47,13 +47,13 @@ export function AuthView() {
           <div className="w-16 h-16 rounded-2xl hero-gradient flex items-center justify-center mx-auto mb-4 shadow-lg">
             <span className="text-3xl">🛣️</span>
           </div>
-          <h1 className="font-display font-800 text-2xl text-ink">RideMate</h1>
+          <h1 className="font-display font-800 text-2xl text-ink">SaathYaan</h1>
           <p className="text-ink-3 text-[14px] mt-1">India's friendliest carpool community</p>
         </div>
 
         <div className="bg-surface rounded-3xl p-6 shadow-xl" style={{ boxShadow: "var(--shadow-lifted)" }}>
           <h2 className="font-display font-700 text-[18px] text-ink mb-1">
-            {mode === "login" ? "Welcome back 👋" : "Join RideMate"}
+            {mode === "login" ? "Welcome back 👋" : "Join SaathYaan"}
           </h2>
           <p className="text-[13px] text-ink-3 mb-5">
             {mode === "login" ? "Log in with your email and password" : "Create your account to start sharing rides"}
@@ -107,7 +107,7 @@ export function AuthView() {
           </button>
 
           <div className="text-center text-[13px] text-ink-3 mt-4">
-            {mode === "login" ? "New to RideMate? " : "Already have an account? "}
+            {mode === "login" ? "New to SaathYaan? " : "Already have an account? "}
             <button
               onClick={() => setMode(m => m === "login" ? "register" : "login")}
               className="text-brand font-display font-600"

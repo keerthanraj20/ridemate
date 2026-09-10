@@ -39,7 +39,7 @@ router.post('/referral/redeem', auth, async (req, res) => {
 
   await notify(req.user.id, {
     type: 'reward', title: 'Referral bonus 🎉',
-    body: `₹${REWARD} credited to your RideMate wallet for joining via ${referrer.name}'s invite.`,
+    body: `₹${REWARD} credited to your SaathYaan wallet for joining via ${referrer.name}'s invite.`,
     link: '/profile',
   })
   await notify(referrer.id, {

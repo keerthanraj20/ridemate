@@ -43,7 +43,7 @@ export default function Header() {
   return (
     <header className="topbar">
       <NavLink to={user ? '/find' : '/auth'} className="brand">
-        <span className="brand-logo"><Car size={20} /></span> RideMate
+        <span className="brand-logo"><Car size={20} /></span> SaathYaan
       </NavLink>
 
       {user && (

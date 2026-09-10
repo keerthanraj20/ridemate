@@ -88,7 +88,7 @@ router.post('/admin/verifications/:id/action', auth, requireAdmin, async (req, r
     type: 'verify',
     title: action === 'approve' ? 'ID verified ✅' : 'ID verification rejected',
     body: action === 'approve'
-      ? 'Your government ID was approved — you are now a fully verified RideMate member.'
+      ? 'Your government ID was approved — you are now a fully verified SaathYaan member.'
       : note ? `Your ID was rejected: ${note}` : 'Your ID was rejected. Please resubmit a clear photo.',
     link: '/profile',
   })

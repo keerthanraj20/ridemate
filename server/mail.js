@@ -1,6 +1,6 @@
 import nodemailer from 'nodemailer'
 
-const FROM = process.env.MAIL_FROM || 'RideMate <ridemate@example.com>'
+const FROM = process.env.MAIL_FROM || 'SaathYaan <saathyaan@example.com>'
 
 // Production: nodemailer transport (Gmail app password recommended).
 // Dev: log every email to console instead of really sending.

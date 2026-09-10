@@ -25,11 +25,11 @@ router.post('/phone/send-code', auth, async (req, res) => {
   const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString()
   await run('INSERT INTO phone_verifications (user_id, code, expires_at) VALUES (?,?,?)', [req.user.id, code, expires])
 
-  sendSms(phone, `RideMate: your phone verification code is ${code}. It expires in 10 minutes.`)
+  sendSms(phone, `SaathYaan: your phone verification code is ${code}. It expires in 10 minutes.`)
 
   sendMail({
     to: req.user.email,
-    subject: 'RideMate — Verify your phone',
+    subject: 'SaathYaan — Verify your phone',
     text: `Hi ${req.user.name},\n\nYour phone verification code is: ${code}\n\nIt expires in 10 minutes.`,
   })
 

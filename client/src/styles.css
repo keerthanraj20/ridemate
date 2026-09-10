@@ -1,5 +1,5 @@
 /* ---------------------------------------------------------------------------
-   RideMate — legacy component styles, migrated onto the redesign light theme.
+   SaathYaan — legacy component styles, migrated onto the redesign light theme.
    Loaded AFTER src/index.css (Tailwind redesign theme). Keeps existing .jsx
    class names (topbar, card, btn, input, ride-card, ...) working while sharing
    the new brand palette.

@@ -180,7 +180,7 @@ export function FindRideView({ onNavigate, onRequestRide, initialFrom = "", init
           ) : (
             <span className="flex items-center gap-2 text-ink-2">
               <span className="w-2 h-2 rounded-full" style={{ background: "#f59e0b", boxShadow: "0 0 0 0 rgba(245,158,11,.5)", animation: "radarPulse 1.8s infinite" }} />
-              <b className="font-display font-700 text-ink">RideMate</b> is live — real people share trips every day near you
+              <b className="font-display font-700 text-ink">SaathYaan</b> is live — real people share trips every day near you
             </span>
           )}
         </div>

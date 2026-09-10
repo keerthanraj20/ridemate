@@ -125,7 +125,7 @@ const otpLimiter = rateLimit({
   skip: () => process.env.RM_DISABLE_RATE_LIMIT === '1',
 })
 
-app.get('/api/health', (req, res) => res.json({ ok: true, app: 'RideMate API' }))
+app.get('/api/health', (req, res) => res.json({ ok: true, app: 'SaathYaan API' }))
 app.use('/api/auth', loginLimiter, authRoutes)
 app.use('/api', generalLimiter, rideRoutes)
 app.use('/api/profile/avatar', avatarLimiter)
@@ -181,7 +181,7 @@ if (isDirectRun) {
   const server = createServer(app)
   attachWs(server)
   server.listen(PORT, '0.0.0.0', async () => {
-    console.log(`🚗 RideMate API running at http://localhost:${PORT}`)
+    console.log(`🚗 SaathYaan API running at http://localhost:${PORT}`)
     await ready()
     const adminEmail = (process.env.RM_ADMIN_EMAIL || '').trim().toLowerCase()
     if (adminEmail) {

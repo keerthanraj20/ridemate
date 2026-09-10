@@ -91,7 +91,7 @@ export function HomeView({ onNavigate, user }: { onNavigate: (v: View) => void; 
             <div className="w-8 h-8 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center">
               <span className="text-lg">🛣️</span>
             </div>
-            <span className="font-display font-800 text-xl text-white tracking-tight">RideMate</span>
+            <span className="font-display font-800 text-xl text-white tracking-tight">SaathYaan</span>
           </div>
           <button className="w-9 h-9 rounded-xl bg-white/15 backdrop-blur-sm flex items-center justify-center relative" onClick={() => onNavigate("home")} aria-label="Notifications">
             <Bell size={18} className="text-white" />

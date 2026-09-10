@@ -97,7 +97,7 @@ router.post('/forgot-password', async (req, res) => {
   const resetUrl = `${CLIENT_URL()}/reset-password?token=${token}`
   await sendMail({
     to: user.email,
-    subject: 'RideMate — Reset your password',
+    subject: 'SaathYaan — Reset your password',
     text: `Hi ${user.name},\n\nClick the link below to reset your password (valid 30 min):\n\n${resetUrl}\n\nIf you didn't request this, ignore this email.`,
   })
 
@@ -136,7 +136,7 @@ router.post('/verify-email', auth, async (req, res) => {
   const verifyUrl = `${CLIENT_URL()}/verify-email?token=${token}`
   await sendMail({
     to: user.email,
-    subject: 'RideMate — Verify your email',
+    subject: 'SaathYaan — Verify your email',
     text: `Hi ${user.name},\n\nClick below to verify your email (valid 24h):\n\n${verifyUrl}\n\nIf you didn't register, ignore this email.`,
   })
 

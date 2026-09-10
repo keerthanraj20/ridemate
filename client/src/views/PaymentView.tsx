@@ -91,7 +91,7 @@ export function PaymentView({ onNavigate }: { onNavigate: (v: View) => void }) {
       const rzp = new window.Razorpay!({
         key: data.razorpay.keyId,
         order_id: data.razorpay.orderId,
-        name: "RideMate",
+        name: "SaathYaan",
         description: "Ride fare — held safely until the trip is done",
         currency: "INR",
         theme: { color: "#0d9488" },
